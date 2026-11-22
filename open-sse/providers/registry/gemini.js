@@ -1,12 +1,11 @@
-import { GOOGLE_OAUTH_CLIENT } from "../shared.js";
-
 export default {
   id: "gemini",
   priority: 50,
   hasFree: true,
   alias: "gemini",
+  aliases: ["google", "aistudio"],
   display: {
-    name: "Gemini",
+    name: "Google AI Studio (Gemini)",
     icon: "diamond",
     color: "#4285F4",
     textIcon: "GE",
@@ -15,23 +14,17 @@ export default {
       apiKeyUrl: "https://aistudio.google.com/app/apikey",
     },
   },
-  category: "freeTier",
+  category: "apikey",
   authType: "apikey",
   authModes: ["apikey"],
   mediaPriority: 1,
   transport: {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/models",
     format: "gemini",
-    clientId: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
-    clientSecret: "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",
     auth: {
       apiKey: {
         header: "x-goog-api-key",
         scheme: "raw",
-      },
-      oauth: {
-        header: "Authorization",
-        scheme: "bearer",
       },
     },
   },
@@ -52,20 +45,20 @@ export default {
     { id: "gemini-embedding-001", name: "Gemini Embedding 001", kind: "embedding" },
     { id: "text-embedding-005", name: "Text Embedding 005", kind: "embedding" },
     { id: "text-embedding-004", name: "Text Embedding 004 (Legacy)", kind: "embedding" },
+    { id: "embedding-001", name: "Embedding 001", dimensions: 768, kind: "embedding" },
     { id: "gemini-3.1-flash-image-preview", name: "Gemini 3.1 Flash Image (Nano Banana 2)", params: [], kind: "image" },
     { id: "gemini-3-pro-image-preview", name: "Gemini 3 Pro Image (Nano Banana Pro)", params: [], kind: "image" },
     { id: "gemini-2.5-flash-image", name: "Gemini 2.5 Flash Image (Nano Banana)", params: [], kind: "image" },
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro (Best)", params: ["language","prompt"], kind: "stt" },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", params: ["language","prompt"], kind: "stt" },
-    { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite (Cheapest)", params: ["language","prompt"], kind: "stt" },
-    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", params: ["language","prompt"], kind: "stt" },
-    { id: "gemini-2.5-flash-native-audio-preview-09-17", name: "Gemini Live Transcription (Realtime)", params: ["language","prompt","system_instruction","setup_timeout_ms","turn_timeout_ms"], kind: "stt", transport: "gemini-live" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro (Best)", params: ["language", "prompt"], kind: "stt" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", params: ["language", "prompt"], kind: "stt" },
+    { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite (Cheapest)", params: ["language", "prompt"], kind: "stt" },
+    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", params: ["language", "prompt"], kind: "stt" },
+    { id: "gemini-2.5-flash-native-audio-preview-09-17", name: "Gemini Live Transcription (Realtime)", params: ["language", "prompt", "system_instruction", "setup_timeout_ms", "turn_timeout_ms"], kind: "stt", transport: "gemini-live" },
     { id: "gemini-3.1-flash-tts-preview", name: "Gemini 3.1 Flash TTS", kind: "tts" },
     { id: "gemini-2.5-flash-preview-tts", name: "Gemini 2.5 Flash TTS", kind: "tts" },
     { id: "gemini-2.5-pro-preview-tts", name: "Gemini 2.5 Pro TTS", kind: "tts" },
-    { id: "embedding-001", name: "Embedding 001", dimensions: 768, kind: "embedding" },
   ],
-  serviceKinds: ["llm","embedding","image","imageToText","webSearch","tts","stt"],
+  serviceKinds: ["llm", "embedding", "image", "imageToText", "tts", "stt"],
   ttsConfig: {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/models",
     authType: "apikey",
@@ -80,10 +73,4 @@ export default {
   },
   embeddingConfig: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/models", authType: "apikey", authHeader: "key" },
   imageConfig: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/models" },
-  searchViaChat: {
-    defaultModel: "gemini-2.5-flash",
-    endpoint: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-    pricingUrl: "https://ai.google.dev/pricing",
-    freeTier: "Free tier: 15 RPM, 1M tokens/day on gemini-2.5-flash via AI Studio.",
-  },
 };

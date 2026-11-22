@@ -1,14 +1,6 @@
-import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { listTtsVoices } from "@/lib/ttsVoices.js";
-
-// Provider → internal voices API. Edge/local-device share the generic endpoint.
-const PROVIDER_API = {
-  elevenlabs: (origin) => `${origin}/api/media-providers/tts/elevenlabs/voices`,
-  deepgram: (origin) => `${origin}/api/media-providers/tts/deepgram/voices`,
-  inworld: (origin) => `${origin}/api/media-providers/tts/inworld/voices`,
-  "edge-tts": (origin) => `${origin}/api/media-providers/tts/voices?provider=edge-tts`,
-  "local-device": (origin) => `${origin}/api/media-providers/tts/voices?provider=local-device`,
-};
+import { authenticateApiKey } from "@/lib/db/index.js";
+import { extractApiKey } from "@/sse/services/auth.js";
 
 export async function OPTIONS() {
   return new Response(null, {
@@ -16,61 +8,36 @@ export async function OPTIONS() {
   });
 }
 
-// GET /v1/audio/voices?provider={p}[&lang=xx]
-// Returns OpenAI-style list with each voice's full model id ready for /v1/audio/speech
+// GET /v1/audio/voices?provider=gemini[&lang=xx]
 export async function GET(request) {
-  try {
-    const { searchParams, origin } = new URL(request.url);
-    const provider = searchParams.get("provider");
-    const lang = searchParams.get("lang");
+  const rawKey = extractApiKey(request);
+  const apiKeyRecord = rawKey ? await authenticateApiKey(rawKey) : null;
+  if (!apiKeyRecord) {
+    return Response.json({ error: { message: "Valid API key required", type: "authentication_error" } }, { status: 401 });
+  }
 
-    if (!provider || !PROVIDER_API[provider]) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const provider = searchParams.get("provider") || "gemini";
+    const lang = searchParams.get("lang");
+    if (provider !== "gemini") {
       return Response.json(
-        { error: { message: `provider must be one of: ${Object.keys(PROVIDER_API).join(", ")}`, type: "invalid_request_error" } },
-        { status: 400, headers: { "Access-Control-Allow-Origin": "*" } },
+        { error: { message: "Only 'gemini' TTS voices are supported", type: "invalid_request_error" } },
+        { status: 400 }
       );
     }
 
-    let data;
-    if (provider === "edge-tts" || provider === "local-device") {
-      // The public route has API-key auth; a server self-fetch cannot use that
-      // key to enter the dashboard-protected API. Reuse its service directly.
-      data = await listTtsVoices(provider, lang);
-    } else {
-      const baseUrl = PROVIDER_API[provider](origin);
-      const url = lang ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}lang=${encodeURIComponent(lang)}` : baseUrl;
-      const res = await fetch(url, { cache: "no-store" });
-      data = await res.json();
-      if (!res.ok || data.error) {
-        return Response.json(
-          { error: { message: data.error || `Upstream ${res.status}`, type: "server_error" } },
-          { status: res.status, headers: { "Access-Control-Allow-Origin": "*" } },
-        );
-      }
-    }
-
-    // Internal API shape: { voices } when lang filter, else { byLang, languages }
-    const rawVoices = lang
-      ? (data.voices || [])
-      : Object.values(data.byLang || {}).flatMap((l) => l.voices || []);
-
-    // Use provider alias for /v1/audio/speech model param (matches skill convention e.g. el/, dg/, edge-tts/)
-    const alias = AI_PROVIDERS[provider]?.alias || provider;
-    const data_out = rawVoices.map((v) => ({
+    const data = await listTtsVoices("gemini", lang);
+    const rawVoices = lang ? (data.voices || []) : Object.values(data.byLang || {}).flatMap((l) => l.voices || []);
+    const out = rawVoices.map((v) => ({
       id: v.id,
       name: v.name,
       lang: v.lang || "",
       gender: v.gender || "",
-      model: `${alias}/${v.id}`,
+      model: `gemini/${v.id}`,
     }));
-
-    return Response.json({ object: "list", data: data_out }, {
-      headers: { "Access-Control-Allow-Origin": "*" },
-    });
+    return Response.json({ object: "list", data: out }, { headers: { "Access-Control-Allow-Origin": "*" } });
   } catch (err) {
-    return Response.json(
-      { error: { message: err.message || "Failed", type: "server_error" } },
-      { status: 502, headers: { "Access-Control-Allow-Origin": "*" } },
-    );
+    return Response.json({ error: { message: err.message || "Failed", type: "server_error" } }, { status: 502 });
   }
 }

@@ -2,10 +2,9 @@ import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { PROVIDERS } from "../config/providers.js";
 import { liftReasoningAliases } from "../translator/concerns/reasoning.js";
-import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
+import { trackPendingRequest, appendRequestLog } from "@/lib/db/index.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, ensureStreamToolCallIds } from "./streamHelpers.js";
-import { restoreToolNames } from "./opencodeFingerprint.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
@@ -199,7 +198,7 @@ export function createSSEStream(options = {}) {
               // "Model tried to call unavailable tool 'read_client'" (#4986).
               let toolNameRestored = false;
               if (toolNameMap?.size) {
-                const restored = restoreToolNames(parsed, toolNameMap);
+                const restored = parsed;
                 if (restored !== parsed) {
                   parsed = restored;
                   toolNameRestored = true;

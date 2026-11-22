@@ -8,7 +8,7 @@
 //
 // The operation name is a resource path (contains "/"), so it is base64url-encoded
 // into the job id returned to the client — GET /v1/videos/{id} stays a flat path.
-import { parseVertexSaJson, refreshVertexToken } from "../../services/tokenRefresh.js";
+import { parseVertexSaJson, refreshVertexToken } from "../../services/vertexAuth.js";
 
 const DEFAULT_LOCATION = "us-central1";
 

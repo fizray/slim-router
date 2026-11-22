@@ -1,116 +1,334 @@
-import { ensureDirs, DATA_FILE } from "./paths.js";
+/**
+ * Unified 3-File Split SQLite Driver using Node 26 LTS built-in `node:sqlite`.
+ *
+ * All handles live on `globalThis.__9r_db` so Next.js 16 separate bundles
+ * (`src/proxy.js` and App Router routes) share identical database instances.
+ *
+ * CRITICAL: `withNullByteSafeParams` ONLY strips NUL bytes on `typeof p === "string"`.
+ * `Buffer` and `Uint8Array` (gzipped BLOBs in payloads.sqlite) pass through untouched.
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { assertRuntimeEnv, isBuildPhase } from "@/lib/config/env.js";
+import {
+  verifyOrInitVaultCanary,
+  encryptConnectionSecrets,
+  encryptNodeSecrets,
+} from "@/lib/crypto/vault.js";
+import { ensureDirs, getDbPaths } from "./paths.js";
+import {
+  PRAGMA_SQL,
+  CONFIG_TABLES,
+  TELEMETRY_TABLES,
+  PAYLOADS_TABLES,
+  SCHEMA_VERSION,
+  syncSchemaTables,
+} from "./schema.js";
 import { stripNullBytes } from "./helpers/nullBytes.js";
 
-// Use global to survive Next.js dev hot-reload (module state resets on reload)
-if (!global._dbAdapter) global._dbAdapter = { instance: null, initPromise: null, logged: false };
-const state = global._dbAdapter;
+const CHECKPOINT_INTERVAL_MS = 60 * 1000;
 
-async function tryBunSqlite() {
-  // Bun runtime only — built-in, no install needed
-  if (!process.versions.bun) return null;
-  try {
-    const { createBunSqliteAdapter } = await import("./adapters/bunSqliteAdapter.js");
-    return await createBunSqliteAdapter(DATA_FILE);
-  } catch (e) {
-    console.warn(`[DB] bun:sqlite unavailable: ${e.message}`);
-    return null;
-  }
+// Suppress ExperimentalWarning if any Node 22/26 build emits one for node:sqlite
+if (!globalThis.__9r_sqliteWarnPatched) {
+  const origEmit = process.emit;
+  process.emit = function (name, data, ...rest) {
+    if (name === "warning" && data?.name === "ExperimentalWarning" && /SQLite/i.test(data.message || "")) {
+      return false;
+    }
+    return origEmit.call(this, name, data, ...rest);
+  };
+  globalThis.__9r_sqliteWarnPatched = true;
 }
 
-async function tryBetterSqlite() {
-  // Skip on Bun — better-sqlite3 native bindings unsupported
-  if (process.versions.bun) return null;
-  // Skip on Node >= 24: the native addon SIGSEGVs on load there, which is a
-  // process-level crash the try/catch below cannot recover from. node:sqlite covers it.
-  const [nodeMajor] = process.versions.node.split(".").map(Number);
-  if (nodeMajor >= 24) return null;
-  try {
-    const { createBetterSqliteAdapter } = await import("./adapters/betterSqliteAdapter.js");
-    return createBetterSqliteAdapter(DATA_FILE);
-  } catch (e) {
-    console.warn(`[DB] better-sqlite3 unavailable: ${e.message}`);
-    return null;
+function getGlobalDbState() {
+  if (!globalThis.__9r_db) {
+    globalThis.__9r_db = {
+      config: null,
+      telemetry: null,
+      payloads: null,
+      initPromise: null,
+      shutdownRegistered: false,
+    };
   }
-}
-
-async function tryNodeSqlite() {
-  // Built-in since Node 22.5.0 — no install needed. Skip under Bun (no node:sqlite).
-  if (process.versions.bun) return null;
-  const [maj, min] = process.versions.node.split(".").map(Number);
-  if (maj < 22 || (maj === 22 && min < 5)) return null;
-  try {
-    const { createNodeSqliteAdapter } = await import("./adapters/nodeSqliteAdapter.js");
-    return await createNodeSqliteAdapter(DATA_FILE);
-  } catch (e) {
-    console.warn(`[DB] node:sqlite unavailable: ${e.message}`);
-    return null;
-  }
-}
-
-async function trySqlJs() {
-  try {
-    const { createSqlJsAdapter } = await import("./adapters/sqljsAdapter.js");
-    return await createSqlJsAdapter(DATA_FILE);
-  } catch (e) {
-    console.warn(`[DB] sql.js unavailable: ${e.message}`);
-    return null;
-  }
+  return globalThis.__9r_db;
 }
 
 /**
- * Make every bound string NUL-safe, once, for all drivers.
- *
- * SQLite stores TEXT as a NUL-terminated C string, so a bound string with an
- * embedded NUL is rejected by better-sqlite3 ("String contains null byte") and
- * silently truncated by node:sqlite. Values that carry raw bytes — a model id
- * or endpoint from the request, tool output, a diff — can contain one, and the
- * write then either aborts the flush worker or loses the tail without a
- * trace. Sanitising at the binding boundary covers every driver and every
- * column type with a single rule, instead of one call site at a time.
- *
- * @param {object} adapter
- * @returns {object} adapter with NUL-safe run/get/all
+ * Sanitize ONLY string parameters for SQLite NUL-byte safety.
+ * Binary BLOBs (Buffer / Uint8Array) are passed verbatim so gzip streams are never corrupted.
  */
-function withNullByteSafeParams(adapter) {
-  const clean = (params) => (Array.isArray(params) ? params.map(stripNullBytes) : params);
+function sanitizeParam(p) {
+  if (typeof p === "string") return stripNullBytes(p);
+  if (p instanceof Uint8Array || Buffer.isBuffer(p)) return p;
+  return p;
+}
+
+function createSqliteHandle(filePath, label) {
+  const db = new DatabaseSync(filePath);
+  db.exec(PRAGMA_SQL);
+
+  const stmtCache = new Map();
+  function prepare(sql) {
+    let stmt = stmtCache.get(sql);
+    if (!stmt) {
+      stmt = db.prepare(sql);
+      stmtCache.set(sql, stmt);
+    }
+    return stmt;
+  }
+
+  const checkpointTimer = setInterval(() => {
+    try {
+      db.exec("PRAGMA wal_checkpoint(PASSIVE)");
+    } catch {
+      // ignore busy checkpoint
+    }
+  }, CHECKPOINT_INTERVAL_MS);
+  if (typeof checkpointTimer.unref === "function") checkpointTimer.unref();
+
+  let closed = false;
+  function close() {
+    if (closed) return;
+    closed = true;
+    clearInterval(checkpointTimer);
+    try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {}
+    try { stmtCache.clear(); } catch {}
+    try { db.close(); } catch {}
+  }
+
   return {
-    ...adapter,
-    run: (sql, params = []) => adapter.run(sql, clean(params)),
-    get: (sql, params = []) => adapter.get(sql, clean(params)),
-    all: (sql, params = []) => adapter.all(sql, clean(params)),
+    driver: "node:sqlite",
+    label,
+    filePath,
+    run(sql, params = []) {
+      const clean = Array.isArray(params) ? params.map(sanitizeParam) : [];
+      const r = prepare(sql).run(...clean);
+      return { changes: Number(r.changes ?? 0), lastInsertRowid: Number(r.lastInsertRowid ?? 0) };
+    },
+    get(sql, params = []) {
+      const clean = Array.isArray(params) ? params.map(sanitizeParam) : [];
+      return prepare(sql).get(...clean);
+    },
+    all(sql, params = []) {
+      const clean = Array.isArray(params) ? params.map(sanitizeParam) : [];
+      return prepare(sql).all(...clean);
+    },
+    exec(sql) {
+      return db.exec(sql);
+    },
+    transaction(fn) {
+      const sp = `sp_${Math.random().toString(36).slice(2, 10)}`;
+      db.exec(`SAVEPOINT ${sp}`);
+      try {
+        const res = fn();
+        db.exec(`RELEASE ${sp}`);
+        return res;
+      } catch (err) {
+        try {
+          db.exec(`ROLLBACK TO ${sp}`);
+          db.exec(`RELEASE ${sp}`);
+        } catch {}
+        throw err;
+      }
+    },
+    checkpoint(mode = "PASSIVE") {
+      try {
+        db.exec(`PRAGMA wal_checkpoint(${mode})`);
+      } catch {}
+    },
+    close,
+    raw: db,
   };
 }
 
-async function initAdapter() {
-  ensureDirs();
-  // Order per runtime:
-  //   Bun:  bun:sqlite → sql.js
-  //   Node: better-sqlite3 → node:sqlite (≥22.5) → sql.js
-  let adapter = await tryBunSqlite();
-  if (!adapter) adapter = await tryBetterSqlite();
-  if (!adapter) adapter = await tryNodeSqlite();
-  if (!adapter) adapter = await trySqlJs();
-  if (!adapter) throw new Error("[DB] No SQLite driver available (bun/better/node/sql.js all failed)");
+// Consumer OAuth / web scraping providers to skip during legacy migration
+const PRUNED_LEGACY_PROVIDERS = new Set([
+  "antigravity", "chatgpt-web", "codebuddy-cn", "codebuddy-intl", "codex",
+  "commandcode", "cursor", "deepseek-web", "devin-cli", "gemini-cli", "gemini-web",
+  "github", "grok-cli", "grok-web", "iflow", "kimchi", "kiro", "mimo-free",
+  "minimax-code", "minimax-code-global", "muse-web", "opencode", "opencode-go",
+  "opencode-zen", "perplexity-web", "qoder", "qoder-cn", "trae", "uc-web",
+  "veoaifree-web", "windsurf", "xiaomi-mimo", "xiaomi-tokenplan", "zed",
+]);
 
-  adapter = withNullByteSafeParams(adapter);
+function migrateLegacyDataSqlite(configDb, paths) {
+  if (!fs.existsSync(paths.legacyDataFile)) return;
+  const migratedFlag = configDb.get("SELECT value FROM _meta WHERE key = ?", ["legacy_migrated"]);
+  if (migratedFlag?.value) return;
 
-  if (!state.logged) {
-    console.log(`[DB] Driver: ${adapter.driver} | file: ${DATA_FILE}`);
-    state.logged = true;
+  let legacyDb = null;
+  try {
+    legacyDb = new DatabaseSync(paths.legacyDataFile, { open: true, readOnly: true });
+    const tables = new Set(
+      legacyDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name)
+    );
+
+    configDb.transaction(() => {
+      if (tables.has("providerConnections")) {
+        const rows = legacyDb.prepare("SELECT * FROM providerConnections").all();
+        for (const r of rows) {
+          if (PRUNED_LEGACY_PROVIDERS.has(r.provider)) continue;
+          let extra = {};
+          try { extra = JSON.parse(r.data || "{}"); } catch {}
+          const encrypted = encryptConnectionSecrets(r.id, extra);
+          configDb.run(
+            `INSERT OR IGNORE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [r.id, r.provider, r.authType || "apikey", r.name, r.email, r.priority, r.isActive ?? 1, JSON.stringify(encrypted), r.createdAt, r.updatedAt]
+          );
+        }
+      }
+
+      if (tables.has("providerNodes")) {
+        const rows = legacyDb.prepare("SELECT * FROM providerNodes").all();
+        for (const r of rows) {
+          let extra = {};
+          try { extra = JSON.parse(r.data || "{}"); } catch {}
+          const encrypted = encryptNodeSecrets(r.id, extra);
+          configDb.run(
+            `INSERT OR IGNORE INTO providerNodes(id, type, name, data, createdAt, updatedAt)
+             VALUES(?, ?, ?, ?, ?, ?)`,
+            [r.id, r.type, r.name, JSON.stringify(encrypted), r.createdAt, r.updatedAt]
+          );
+        }
+      }
+
+      if (tables.has("combos")) {
+        const rows = legacyDb.prepare("SELECT * FROM combos").all();
+        for (const r of rows) {
+          configDb.run(
+            `INSERT OR IGNORE INTO combos(id, name, kind, models, createdAt, updatedAt)
+             VALUES(?, ?, ?, ?, ?, ?)`,
+            [r.id, r.name, r.kind, r.models, r.createdAt, r.updatedAt]
+          );
+        }
+      }
+
+      if (tables.has("kv")) {
+        const rows = legacyDb.prepare("SELECT * FROM kv").all();
+        for (const r of rows) {
+          if (["modelAliases", "customModels", "disabledModels", "pricing"].includes(r.scope)) {
+            configDb.run(
+              "INSERT OR IGNORE INTO kv(scope, key, value) VALUES(?, ?, ?)",
+              [r.scope, r.key, r.value]
+            );
+          }
+        }
+      }
+
+      configDb.run(
+        "INSERT INTO _meta(key, value) VALUES('legacy_migrated', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [new Date().toISOString()]
+      );
+    });
+
+    legacyDb.close();
+    legacyDb = null;
+
+    const archiveDest = path.join(paths.backupsDir, "legacy-pre-hardening.sqlite");
+    if (!fs.existsSync(archiveDest)) {
+      fs.renameSync(paths.legacyDataFile, archiveDest);
+    }
+  } catch (err) {
+    console.warn(`[DB] Legacy migration skipped/failed: ${err.message}`);
+  } finally {
+    try { legacyDb?.close?.(); } catch {}
   }
-
-  const { runMigrationOnce } = await import("./migrate.js");
-  await runMigrationOnce(adapter);
-  return adapter;
 }
 
-export async function getAdapter() {
-  if (state.instance) return state.instance;
-  if (!state.initPromise) state.initPromise = initAdapter().then((a) => { state.instance = a; return a; });
+function registerShutdownHooks(state) {
+  if (state.shutdownRegistered) return;
+  state.shutdownRegistered = true;
+
+  const closeAll = () => {
+    try { state.config?.close?.(); } catch {}
+    try { state.telemetry?.close?.(); } catch {}
+    try { state.payloads?.close?.(); } catch {}
+  };
+
+  process.once("beforeExit", closeAll);
+  process.once("SIGINT", () => { closeAll(); process.exit(0); });
+  process.once("SIGTERM", () => { closeAll(); process.exit(0); });
+}
+
+function initAllDatabasesSync() {
+  const state = getGlobalDbState();
+  if (state.config && state.telemetry && state.payloads) return state;
+
+  if (!isBuildPhase()) {
+    assertRuntimeEnv({ exitOnFailure: false });
+  }
+
+  ensureDirs();
+  const paths = getDbPaths();
+
+  const configDb = createSqliteHandle(paths.configDbFile, "config");
+  syncSchemaTables(configDb, CONFIG_TABLES);
+  configDb.run(
+    "INSERT INTO _meta(key, value) VALUES('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    [String(SCHEMA_VERSION)]
+  );
+
+  // Verify or initialize AES-256-GCM Vault Canary on config.sqlite (fail-closed)
+  if (!isBuildPhase()) {
+    verifyOrInitVaultCanary(configDb);
+    migrateLegacyDataSqlite(configDb, paths);
+  }
+
+  const telemetryDb = createSqliteHandle(paths.telemetryDbFile, "telemetry");
+  syncSchemaTables(telemetryDb, TELEMETRY_TABLES);
+  telemetryDb.run(
+    "INSERT INTO _meta(key, value) VALUES('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    [String(SCHEMA_VERSION)]
+  );
+
+  const payloadsDb = createSqliteHandle(paths.payloadsDbFile, "payloads");
+  syncSchemaTables(payloadsDb, PAYLOADS_TABLES);
+  payloadsDb.run(
+    "INSERT INTO _meta(key, value) VALUES('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    [String(SCHEMA_VERSION)]
+  );
+
+  state.config = configDb;
+  state.telemetry = telemetryDb;
+  state.payloads = payloadsDb;
+
+  registerShutdownHooks(state);
+  return state;
+}
+
+export async function getDatabases() {
+  const state = getGlobalDbState();
+  if (state.config && state.telemetry && state.payloads) return state;
+  if (!state.initPromise) {
+    state.initPromise = Promise.resolve().then(() => initAllDatabasesSync());
+  }
   return state.initPromise;
 }
 
+export async function getConfigDb() {
+  return (await getDatabases()).config;
+}
+
+export async function getTelemetryDb() {
+  return (await getDatabases()).telemetry;
+}
+
+export async function getPayloadsDb() {
+  return (await getDatabases()).payloads;
+}
+
+// Backward-compatible aliases (default to config.sqlite)
+export async function getAdapter() {
+  return getConfigDb();
+}
+
 export function getAdapterSync() {
-  if (!state.instance) throw new Error("[DB] adapter not initialized — await getAdapter() first");
-  return state.instance;
+  const state = getGlobalDbState();
+  if (!state.config) {
+    return initAllDatabasesSync().config;
+  }
+  return state.config;
 }

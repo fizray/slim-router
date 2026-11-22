@@ -1,10 +1,12 @@
 import { v4 as uuidv4 } from "uuid";
-import { getAdapter } from "../driver.js";
+import { getConfigDb } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { encryptNodeSecrets, decryptNodeSecrets, maskSecret } from "@/lib/crypto/vault.js";
 
 function rowToNode(row) {
   if (!row) return null;
-  const extra = parseJson(row.data, {});
+  const rawExtra = parseJson(row.data, {});
+  const extra = decryptNodeSecrets(row.id, rawExtra);
   return {
     ...extra,
     id: row.id,
@@ -17,11 +19,12 @@ function rowToNode(row) {
 
 function nodeToRow(n) {
   const { id, type, name, createdAt, updatedAt, ...rest } = n;
+  const encryptedRest = encryptNodeSecrets(id, rest);
   return {
     id,
     type: type ?? null,
     name: name ?? null,
-    data: stringifyJson(rest),
+    data: stringifyJson(encryptedRest),
     createdAt,
     updatedAt,
   };
@@ -38,8 +41,26 @@ function upsert(db, n) {
   );
 }
 
+export function maskNodeForApi(node) {
+  if (!node) return null;
+  const out = { ...node };
+  if (out.apiKey) {
+    out.apiKeyMasked = maskSecret(out.apiKey);
+    out.hasSecret = true;
+    delete out.apiKey;
+  }
+  if (out.customHeaders && typeof out.customHeaders === "object") {
+    const masked = {};
+    for (const [k, v] of Object.entries(out.customHeaders)) {
+      masked[k] = /auth|key|token|secret|cookie/i.test(k) ? maskSecret(String(v || "")) : v;
+    }
+    out.customHeaders = masked;
+  }
+  return out;
+}
+
 export async function getProviderNodes(filter = {}) {
-  const db = await getAdapter();
+  const db = await getConfigDb();
   const where = [];
   const params = [];
   if (filter.type) { where.push("type = ?"); params.push(filter.type); }
@@ -48,12 +69,12 @@ export async function getProviderNodes(filter = {}) {
 }
 
 export async function getProviderNodeById(id) {
-  const db = await getAdapter();
-  return rowToNode(db.get(`SELECT * FROM providerNodes WHERE id = ?`, [id]));
+  const db = await getConfigDb();
+  return rowToNode(db.get("SELECT * FROM providerNodes WHERE id = ?", [id]));
 }
 
 export async function createProviderNode(data) {
-  const db = await getAdapter();
+  const db = await getConfigDb();
   const now = new Date().toISOString();
   const node = {
     id: data.id || uuidv4(),
@@ -62,6 +83,8 @@ export async function createProviderNode(data) {
     prefix: data.prefix,
     apiType: data.apiType,
     baseUrl: data.baseUrl,
+    ...(data.apiKey ? { apiKey: data.apiKey } : {}),
+    ...(data.customHeaders ? { customHeaders: data.customHeaders } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -70,12 +93,14 @@ export async function createProviderNode(data) {
 }
 
 export async function updateProviderNode(id, data) {
-  const db = await getAdapter();
+  const db = await getConfigDb();
   let result = null;
   db.transaction(() => {
-    const row = db.get(`SELECT * FROM providerNodes WHERE id = ?`, [id]);
+    const row = db.get("SELECT * FROM providerNodes WHERE id = ?", [id]);
     if (!row) return;
-    const merged = { ...rowToNode(row), ...data, updatedAt: new Date().toISOString() };
+    const existing = rowToNode(row);
+    const merged = { ...existing, ...data, id, updatedAt: new Date().toISOString() };
+    if (!data.apiKey && existing.apiKey) merged.apiKey = existing.apiKey;
     upsert(db, merged);
     result = merged;
   });
@@ -83,14 +108,14 @@ export async function updateProviderNode(id, data) {
 }
 
 export async function deleteProviderNode(id) {
-  const db = await getAdapter();
+  const db = await getConfigDb();
   let removed = null;
   db.transaction(() => {
-    const row = db.get(`SELECT * FROM providerNodes WHERE id = ?`, [id]);
+    const row = db.get("SELECT * FROM providerNodes WHERE id = ?", [id]);
     if (!row) return;
     removed = rowToNode(row);
-    db.run(`DELETE FROM providerNodes WHERE id = ?`, [id]);
-    db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key LIKE ?`, [`${id}|%`]);
+    db.run("DELETE FROM providerNodes WHERE id = ?", [id]);
+    db.run("DELETE FROM kv WHERE scope = 'customModels' AND key LIKE ?", [`${id}|%`]);
   });
   return removed;
 }

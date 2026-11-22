@@ -1,51 +1,34 @@
 import { NextResponse } from "next/server";
-import { exportDb, getSettings, importDb } from "@/lib/localDb";
-import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
+import { exportDb, importDb } from "@/lib/db/index.js";
 import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
 
-const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const PASSWORD_HEADER = "x-9r-password";
-
-// CLI token requests are already trusted (local machine); skip password re-auth.
-function isCliRequest(request) {
-  return Boolean(request.headers.get(CLI_TOKEN_HEADER));
-}
+const NO_STORE = { "Cache-Control": "no-store" };
 
 export async function GET(request) {
   try {
-    if (!isCliRequest(request) && !(await verifyDashboardPassword(request.headers.get(PASSWORD_HEADER)))) {
-      return NextResponse.json({ error: "Invalid password" }, { status: 401 });
+    const password = request.headers.get(PASSWORD_HEADER);
+    if (!(await verifyDashboardPassword(password))) {
+      return NextResponse.json({ error: "Admin password re-authentication required" }, { status: 401, headers: NO_STORE });
     }
-    const payload = await exportDb();
-    return NextResponse.json(payload);
+    const url = new URL(request.url);
+    const includeSecrets = url.searchParams.get("includeSecrets") === "true";
+    const payload = await exportDb({ includeSecrets });
+    return NextResponse.json(payload, { headers: NO_STORE });
   } catch (error) {
-    console.log("Error exporting database:", error);
-    return NextResponse.json({ error: "Failed to export database" }, { status: 500 });
+    return NextResponse.json({ error: error.message || "Failed to export database" }, { status: 500, headers: NO_STORE });
   }
 }
 
 export async function POST(request) {
   try {
     const { password, ...payload } = await request.json();
-    if (!isCliRequest(request) && !(await verifyDashboardPassword(password))) {
-      return NextResponse.json({ error: "Invalid password" }, { status: 401 });
+    if (!(await verifyDashboardPassword(password))) {
+      return NextResponse.json({ error: "Admin password re-authentication required" }, { status: 401, headers: NO_STORE });
     }
     await importDb(payload);
-
-    // Ensure proxy settings take effect immediately after a DB import.
-    try {
-      const settings = await getSettings();
-      applyOutboundProxyEnv(settings);
-    } catch (err) {
-      console.warn("[Settings][DatabaseImport] Failed to re-apply outbound proxy env:", err);
-    }
-
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true }, { headers: NO_STORE });
   } catch (error) {
-    console.log("Error importing database:", error);
-    return NextResponse.json(
-      { error: error?.message || "Failed to import database" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: error?.message || "Failed to import database" }, { status: 400, headers: NO_STORE });
   }
 }

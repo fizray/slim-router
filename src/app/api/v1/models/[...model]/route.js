@@ -1,4 +1,6 @@
 import { buildModelsList } from "../route.js";
+import { authenticateApiKey } from "@/lib/db/index.js";
+import { extractApiKey } from "@/sse/services/auth.js";
 import { getKeyAccessContext, filterModelsListForKey } from "@/sse/services/keyAccess.js";
 
 // URL slug → service kind(s). `web` covers both webSearch and webFetch.
@@ -44,7 +46,15 @@ export async function GET(request, { params }) {
     const path = Array.isArray(model) ? model : [model];
     const identifier = path.filter(Boolean).join("/");
     const kindFilter = path.length === 1 ? KIND_SLUG_MAP[identifier] : null;
-    const keyAccess = await getKeyAccessContext(request);
+    const rawKey = extractApiKey(request);
+    const apiKeyRecord = rawKey ? await authenticateApiKey(rawKey) : null;
+    if (!apiKeyRecord) {
+      return json(
+        { error: { message: "Valid API key required", type: "authentication_error" } },
+        { status: 401 },
+      );
+    }
+    const keyAccess = await getKeyAccessContext(request, apiKeyRecord);
 
     if (kindFilter) {
       const data = await filterModelsListForKey(keyAccess, await buildModelsList(kindFilter));

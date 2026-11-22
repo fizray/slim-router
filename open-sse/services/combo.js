@@ -8,12 +8,27 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { parseModel } from "./model.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { peekStreamForContent, reconstructStream, isNoRetryFinish } from "./emptyFailover.js";
-import {
-  getStickyComboModel,
-  setStickyComboModel,
-  clearStickyComboSession,
-  orderModelsByChoice,
-} from "./systemoneRouter.js";
+
+// Lightweight sticky combo session map anchored on globalThis
+const stickySessions = (globalThis.__9r_stickyComboSessions ??= new Map());
+function getStickyComboModel(comboName, sessionId, models) {
+  if (!sessionId) return null;
+  const choice = stickySessions.get(`${comboName}:${sessionId}`);
+  return choice && models.includes(choice) ? choice : null;
+}
+function setStickyComboModel(comboName, sessionId, model) {
+  if (sessionId && model) stickySessions.set(`${comboName}:${sessionId}`, model);
+}
+function clearStickyComboSession(comboName, sessionId) {
+  if (!comboName) { stickySessions.clear(); return; }
+  if (sessionId) { stickySessions.delete(`${comboName}:${sessionId}`); return; }
+  for (const k of stickySessions.keys()) if (k.startsWith(`${comboName}:`)) stickySessions.delete(k);
+}
+function orderModelsByChoice(models, smartResult) {
+  const choice = typeof smartResult === "string" ? smartResult : smartResult?.choice;
+  if (!choice || !models.includes(choice)) return models;
+  return [choice, ...models.filter((m) => m !== choice)];
+}
 
 // Peek a 2xx combo response for real content. Returns null for non-SSE responses (leave
 // them untouched). For SSE, returns { outcome: "content"|"empty", finishReason, response }
@@ -902,4 +917,4 @@ export {
   setStickyComboModel,
   clearStickyComboSession,
   orderModelsByChoice,
-} from "./systemoneRouter.js";
+};

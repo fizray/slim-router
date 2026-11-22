@@ -1,6 +1,5 @@
 import { createErrorResult } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
-import { refreshTokenByProvider } from "../services/tokenRefresh.js";
 import { PROVIDER_MEDIA } from "../providers/index.js";
 import { getVideoAdapter } from "./videoProviders/index.js";
 
@@ -231,36 +230,6 @@ export async function handleVideoProxyCore({
     }
     // Never re-send a creation POST on network error — the job may already exist upstream.
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, sanitizeSecrets(`[${provider}] video upstream fetch failed: ${error.message}`, credentials));
-  }
-
-  // 401/403 → refresh once → retry once (OAuth accounts only; API keys can't refresh)
-  if (
-    (upstream.status === HTTP_STATUS.UNAUTHORIZED || upstream.status === HTTP_STATUS.FORBIDDEN) &&
-    credentials?.refreshToken
-  ) {
-    let refreshed = null;
-    try {
-      refreshed = await refreshTokenByProvider(provider, credentials, log);
-    } catch (error) {
-      log?.warn?.("TOKEN", `${provider} | video refresh error: ${sanitizeSecrets(error.message, credentials)}`);
-    }
-    if (refreshed?.accessToken) {
-      log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for video ${method}`);
-      Object.assign(credentials, refreshed);
-      if (onCredentialsRefreshed) await onCredentialsRefreshed(refreshed);
-      try {
-        await upstream.body?.cancel?.();
-      } catch { /* noop */ }
-      try {
-        const retry = await doFetch();
-        if (retry.planError) return createErrorResult(HTTP_STATUS.BAD_REQUEST, `[${provider}] ${retry.planError}`);
-        upstream = retry.response;
-      } catch (error) {
-        return createErrorResult(HTTP_STATUS.BAD_GATEWAY, sanitizeSecrets(`[${provider}] video retry after refresh failed: ${error.message}`, credentials));
-      }
-    } else {
-      log?.warn?.("TOKEN", `${provider.toUpperCase()} | video refresh failed — account needs re-auth`);
-    }
   }
 
   const bodyText = await upstream.text().catch(() => "");

@@ -1,98 +1,46 @@
-import crypto from "crypto";
-
-const API_KEY_SECRET = process.env.API_KEY_SECRET || "endpoint-proxy-api-key-secret";
-
 /**
- * Generate 6-char random keyId
+ * Hardened Client API Key utilities:
+ * - Cryptographically random format: `sk-9r_<base64url(32 bytes)>` (no machineId)
+ * - Zero plaintext storage: only `HMAC-SHA256(API_KEY_SECRET, rawKey)` + `key_hint`
+ * - Constant-time verification with `crypto.timingSafeEqual`
  */
-function generateKeyId() {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let result = "";
-  for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+
+import crypto from "node:crypto";
+import { getApiKeySecret } from "@/lib/config/env.js";
+
+const KEY_PREFIX = "sk-9r_";
+
+export function generateClientApiKey() {
+  const randomPart = crypto.randomBytes(32).toString("base64url");
+  const rawKey = `${KEY_PREFIX}${randomPart}`;
+  const keyHash = hashApiKey(rawKey);
+  const keyHint = buildKeyHint(rawKey);
+  return { rawKey, keyHash, keyHint };
 }
 
-/**
- * Generate CRC (8-char HMAC)
- */
-function generateCrc(machineId, keyId) {
+export function hashApiKey(rawKey) {
+  if (!rawKey || typeof rawKey !== "string") return "";
+  const secret = getApiKeySecret();
   return crypto
-    .createHmac("sha256", API_KEY_SECRET)
-    .update(machineId + keyId)
-    .digest("hex")
-    .slice(0, 8);
+    .createHmac("sha256", secret)
+    .update(rawKey.trim())
+    .digest("hex");
 }
 
-/**
- * Generate API key with machineId embedded
- * Format: sk-{machineId}-{keyId}-{crc8}
- * @param {string} machineId - 16-char machine ID
- * @returns {{ key: string, keyId: string }}
- */
-export function generateApiKeyWithMachine(machineId) {
-  const keyId = generateKeyId();
-  const crc = generateCrc(machineId, keyId);
-  const key = `sk-${machineId}-${keyId}-${crc}`;
-  return { key, keyId };
+export function buildKeyHint(rawKey) {
+  if (!rawKey || typeof rawKey !== "string") return "sk-9r_****";
+  const trimmed = rawKey.trim();
+  if (trimmed.length <= 12) return `${trimmed.slice(0, 4)}...`;
+  return `${trimmed.slice(0, 10)}...${trimmed.slice(-4)}`;
 }
 
-/**
- * Parse API key and extract machineId + keyId
- * Supports both formats:
- * - New: sk-{machineId}-{keyId}-{crc8}
- * - Old: sk-{random8}
- * @param {string} apiKey
- * @returns {{ machineId: string, keyId: string, isNewFormat: boolean } | null}
- */
-export function parseApiKey(apiKey) {
-  if (!apiKey || !apiKey.startsWith("sk-")) return null;
-
-  const parts = apiKey.split("-");
-  
-  // New format: sk-{machineId}-{keyId}-{crc8} = 4 parts
-  if (parts.length === 4) {
-    const [, machineId, keyId, crc] = parts;
-    
-    // Validate CRC
-    const expectedCrc = generateCrc(machineId, keyId);
-    if (crc !== expectedCrc) return null;
-    
-    return { machineId, keyId, isNewFormat: true };
+export function verifyApiKeyHash(rawKey, storedHashHex) {
+  if (!rawKey || !storedHashHex || typeof rawKey !== "string" || typeof storedHashHex !== "string") {
+    return false;
   }
-  
-  // Old format: sk-{random8} = 2 parts
-  if (parts.length === 2) {
-    return { machineId: null, keyId: parts[1], isNewFormat: false };
-  }
-  
-  return null;
+  const computed = hashApiKey(rawKey);
+  const a = Buffer.from(computed, "hex");
+  const b = Buffer.from(storedHashHex, "hex");
+  if (a.length === 0 || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
-
-/**
- * Verify API key CRC (only for new format)
- * @param {string} apiKey
- * @returns {boolean}
- */
-export function verifyApiKeyCrc(apiKey) {
-  const parsed = parseApiKey(apiKey);
-  if (!parsed) return false;
-  
-  // Old format doesn't have CRC, always valid if parsed
-  if (!parsed.isNewFormat) return true;
-  
-  // New format already verified in parseApiKey
-  return true;
-}
-
-/**
- * Check if API key is new format (contains machineId)
- * @param {string} apiKey
- * @returns {boolean}
- */
-export function isNewFormatKey(apiKey) {
-  const parsed = parseApiKey(apiKey);
-  return parsed?.isNewFormat === true;
-}
-

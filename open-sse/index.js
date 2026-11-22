@@ -1,70 +1,51 @@
-// Patch global fetch with proxy support (must be first)
+// Patch global fetch with hardened SSRF + TLS transport (must be first)
 import "./utils/proxyFetch.js";
 
 // Config
 export { PROVIDERS } from "./config/providers.js";
-export { OAUTH_ENDPOINTS, CLAUDE_SYSTEM_PROMPT } from "./config/appConstants.js";
+export { CLAUDE_SYSTEM_PROMPT } from "./config/appConstants.js";
 export { CACHE_TTL, DEFAULT_MAX_TOKENS, COOLDOWN_MS, BACKOFF_CONFIG } from "./config/runtimeConfig.js";
-export { 
-  PROVIDER_MODELS, 
+export {
+  PROVIDER_MODELS,
   getProviderModels,
-  getDefaultModel, 
+  getDefaultModel,
   isValidModel,
   findModelName,
   getModelTargetFormat,
   PROVIDER_ID_TO_ALIAS,
-  getModelsByProviderId
+  getModelsByProviderId,
 } from "./config/providerModels.js";
 
 // Translator
 export { FORMATS } from "./translator/formats.js";
-export { 
-  register, 
-  translateRequest, 
-  translateResponse, 
-  needsTranslation, 
-  initState, 
-  initTranslators 
+export {
+  register,
+  translateRequest,
+  translateResponse,
+  needsTranslation,
+  initState,
+  initTranslators,
 } from "./translator/index.js";
 
 // Services
-export { 
-  detectFormat, 
-  getTargetFormat 
-} from "./services/provider.js";
-
+export { detectFormat, getTargetFormat } from "./services/provider.js";
 export { parseModel, resolveModelAliasFromMap, getModelInfoCore } from "./services/model.js";
-
 export {
   checkFallbackError,
   isAccountUnavailable,
   getUnavailableUntil,
-  filterAvailableAccounts
+  filterAvailableAccounts,
 } from "./services/accountFallback.js";
-
 export {
-  TOKEN_EXPIRY_BUFFER_MS,
-  refreshAccessToken,
-  refreshClaudeOAuthToken,
+  parseVertexSaJson,
+  parseVertexAdcJson,
+  refreshVertexToken,
   refreshGoogleToken,
-  refreshCodexToken,
-  refreshIflowToken,
-  refreshGitHubToken,
-  refreshCopilotToken,
-  getAccessToken,
-  refreshTokenByProvider
-} from "./services/tokenRefresh.js";
-
-export {
-  CODEX_MAX_REFRESH_AGE_MS,
-  shouldRefreshCredentials,
-  refreshProviderCredentials,
-  mergeRefreshedCredentials,
-  mergeProviderSpecificData,
-} from "./services/oauthCredentialManager.js";
+  refreshWithRetry,
+} from "./services/vertexAuth.js";
 
 // Handlers
-export { handleChatCore, isTokenExpiringSoon } from "./handlers/chatCore.js";
+export { handleChatCore } from "./handlers/chatCore.js";
 export { createStreamController, pipeWithDisconnect, createDisconnectAwareStream } from "./utils/streamHandler.js";
 
 // Executors
@@ -72,7 +53,7 @@ export { getExecutor, hasSpecializedExecutor } from "./executors/index.js";
 
 // Utils
 export { errorResponse, formatProviderError } from "./utils/error.js";
-export { 
-  createSSETransformStreamWithLogger, 
-  createPassthroughStreamWithLogger 
+export {
+  createSSETransformStreamWithLogger,
+  createPassthroughStreamWithLogger,
 } from "./utils/stream.js";

@@ -67,10 +67,13 @@ export function extractClientApiKey(request) {
  * Keys are only authenticated elsewhere (middleware / requireApiKey); this only
  * decides what an identified key may call.
  */
-export async function getKeyAccessContext(request) {
-  const apiKey = extractClientApiKey(request);
-  if (!apiKey) return null;
-  const record = await getApiKeyByKey(apiKey);
+export async function getKeyAccessContext(request, preAuthRecord = null) {
+  let record = preAuthRecord;
+  if (!record) {
+    const apiKey = extractClientApiKey(request);
+    if (!apiKey) return null;
+    record = await getApiKeyByKey(apiKey);
+  }
   if (!record?.access?.restricted) return null;
   return {
     keyId: record.id,

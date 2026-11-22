@@ -1,75 +1,143 @@
-// DB safety backups — taken ONLY before a schema change (see migrate.js).
-//
-// ⚠️ AGENT/DEV NOTES:
-// - Backups are a best-effort safety net before schema migrations. There is NO
-//   automated restore path; recovery is manual (copy a backup file back).
-// - Backups intentionally EXCLUDE the `requestDetails` table (observability log,
-//   auto-pruned, non-critical) so a multi-hundred-MB DB backs up as a few MB.
-// - Only the newest KEEP_BACKUPS are kept; older ones are pruned automatically.
+/**
+ * Atomic hot-backup via SQLite `VACUUM INTO` + temp-file rename.
+ * - Daily automated backup for config.sqlite (retains last 14 daily snapshots)
+ * - On-demand atomic snapshot for config.sqlite or telemetry.sqlite
+ */
+
 import fs from "node:fs";
 import path from "node:path";
-import { BACKUPS_DIR, ensureDirs } from "./paths.js";
-import { timestampSlug, getAppVersion } from "./version.js";
+import crypto from "node:crypto";
+import { getConfigDb, getTelemetryDb, getPayloadsDb } from "./driver.js";
+import { getDbPaths, ensureDirs } from "./paths.js";
 
-const KEEP_BACKUPS = 3;
+const MAX_DAILY_BACKUPS = 14;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-// Tables excluded from safety backups (large, non-critical, reproducible).
-const BACKUP_EXCLUDE_TABLES = ["requestDetails"];
+function formatDateStamp(date = new Date()) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
 
-export function makeBackupDir(label) {
+function sqlQuotePath(filePath) {
+  return `'${String(filePath).replace(/'/g, "''")}'`;
+}
+
+export async function createAtomicBackup(target = "config", customFilename = null) {
   ensureDirs();
-  const ver = getAppVersion();
-  const slug = `${label}-${ver}-${timestampSlug()}`;
-  const dir = path.join(BACKUPS_DIR, slug);
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
+  const { backupsDir } = getDbPaths();
+  const db = target === "telemetry"
+    ? await getTelemetryDb()
+    : target === "payloads"
+      ? await getPayloadsDb()
+      : await getConfigDb();
 
-export function backupFile(srcPath, destDir, destName = null) {
-  if (!fs.existsSync(srcPath)) return null;
-  const name = destName || path.basename(srcPath);
-  const dest = path.join(destDir, name);
-  fs.copyFileSync(srcPath, dest);
-  return dest;
-}
+  const stamp = formatDateStamp();
+  const finalName = customFilename || `${target}-${stamp}.sqlite`;
+  const finalPath = path.join(backupsDir, path.basename(finalName));
+  const tmpPath = path.join(backupsDir, `.tmp-${target}-${crypto.randomBytes(6).toString("hex")}.sqlite`);
 
-// Lightweight DB backup via ATTACH: create an empty sqlite file, copy every
-// table EXCEPT the excluded ones into it. Avoids duplicating the huge
-// observability log, so the backup stays small regardless of DB size.
-export function backupDbLite(adapter, destDir, destName = "data.sqlite") {
-  const dest = path.join(destDir, destName);
-  try { fs.rmSync(dest, { force: true }); } catch {}
-  const escaped = dest.replace(/'/g, "''");
-
-  adapter.exec(`ATTACH DATABASE '${escaped}' AS bak`);
   try {
-    const excluded = new Set(BACKUP_EXCLUDE_TABLES);
-    const tables = adapter
-      .all(`SELECT name, sql FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
-      .filter((t) => !excluded.has(t.name));
-
-    adapter.transaction(() => {
-      for (const t of tables) {
-        // Recreate table structure in backup DB, then copy rows.
-        const createSql = t.sql.replace(/CREATE TABLE\s+/i, "CREATE TABLE bak.");
-        adapter.exec(createSql);
-        adapter.exec(`INSERT INTO bak.${t.name} SELECT * FROM main.${t.name}`);
-      }
-    });
-  } finally {
-    try { adapter.exec("DETACH DATABASE bak"); } catch {}
+    db.checkpoint("PASSIVE");
+    db.exec(`VACUUM INTO ${sqlQuotePath(tmpPath)}`);
+    fs.chmodSync(tmpPath, 0o600);
+    fs.renameSync(tmpPath, finalPath);
+    const stat = fs.statSync(finalPath);
+    return {
+      ok: true,
+      target,
+      filename: path.basename(finalPath),
+      path: finalPath,
+      bytes: stat.size,
+      createdAt: stat.mtime.toISOString(),
+    };
+  } catch (err) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+    throw err;
   }
-  return dest;
 }
 
-export function pruneOldBackups() {
-  if (!fs.existsSync(BACKUPS_DIR)) return;
-  const entries = fs.readdirSync(BACKUPS_DIR, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => ({ name: e.name, full: path.join(BACKUPS_DIR, e.name), mtime: fs.statSync(path.join(BACKUPS_DIR, e.name)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
+export function pruneOldDailyConfigBackups(maxKeep = MAX_DAILY_BACKUPS) {
+  const { backupsDir } = getDbPaths();
+  if (!fs.existsSync(backupsDir)) return 0;
+  const files = fs
+    .readdirSync(backupsDir)
+    .filter((f) => /^config-\d{4}-\d{2}-\d{2}\.sqlite$/.test(f))
+    .sort()
+    .reverse();
 
-  for (const old of entries.slice(KEEP_BACKUPS)) {
-    try { fs.rmSync(old.full, { recursive: true, force: true }); } catch {}
+  let removed = 0;
+  for (const f of files.slice(maxKeep)) {
+    try {
+      fs.unlinkSync(path.join(backupsDir, f));
+      removed++;
+    } catch {}
   }
+  return removed;
+}
+
+export function listBackups() {
+  const { backupsDir } = getDbPaths();
+  if (!fs.existsSync(backupsDir)) return [];
+  return fs
+    .readdirSync(backupsDir)
+    .filter((f) => f.endsWith(".sqlite") && !f.startsWith(".tmp-"))
+    .map((f) => {
+      const full = path.join(backupsDir, f);
+      const stat = fs.statSync(full);
+      return {
+        filename: f,
+        bytes: stat.size,
+        createdAt: stat.mtime.toISOString(),
+      };
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function getDbDiskStats() {
+  const paths = getDbPaths();
+  const statOf = (file) => {
+    try {
+      const s = fs.statSync(file);
+      let walBytes = 0;
+      try { walBytes = fs.statSync(`${file}-wal`).size; } catch {}
+      return { exists: true, bytes: s.size, walBytes, totalBytes: s.size + walBytes };
+    } catch {
+      return { exists: false, bytes: 0, walBytes: 0, totalBytes: 0 };
+    }
+  };
+  return {
+    config: statOf(paths.configDbFile),
+    telemetry: statOf(paths.telemetryDbFile),
+    payloads: statOf(paths.payloadsDbFile),
+    backups: listBackups(),
+  };
+}
+
+export function startDailyBackupScheduler() {
+  if (globalThis.__9r_backupSchedulerStarted) return;
+  globalThis.__9r_backupSchedulerStarted = true;
+
+  const runDaily = async () => {
+    try {
+      await createAtomicBackup("config");
+      pruneOldDailyConfigBackups(MAX_DAILY_BACKUPS);
+    } catch (err) {
+      console.error("[Backup] Daily config backup failed:", err.message);
+    }
+  };
+
+  // Run an initial check shortly after boot (skip if today's backup exists)
+  const initTimer = setTimeout(() => {
+    const { backupsDir } = getDbPaths();
+    const todayFile = path.join(backupsDir, `config-${formatDateStamp()}.sqlite`);
+    if (!fs.existsSync(todayFile)) {
+      runDaily();
+    }
+  }, 15_000);
+  if (typeof initTimer.unref === "function") initTimer.unref();
+
+  const dailyTimer = setInterval(runDaily, ONE_DAY_MS);
+  if (typeof dailyTimer.unref === "function") dailyTimer.unref();
 }

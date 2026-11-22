@@ -1,55 +1,132 @@
-// Daily refresh of model capabilities from models.dev.
-//
-// Downloads the catalog, keeps only what differs from the hand-written tables,
-// and writes it next to the database. Failures are swallowed on purpose: a
-// stale or missing file just means those tables keep deciding on their own.
+/**
+ * Dynamic Model Capabilities & Live Pricing Sync from https://models.dev/api.json
+ *
+ * Scoped strictly to Google AI Studio (gemini), Google Vertex AI (vertex),
+ * and Vertex AI Partner Models (vertex-partner).
+ * - Writes capability overrides to DATA_DIR/model-catalog.json
+ * - Writes live $/1M token pricing directly into config.sqlite (kv scope 'pricing_synced')
+ */
 
 import fs from "node:fs";
 import path from "node:path";
-import { CATALOG_FILE, CATALOG_RAW_FILE, CATALOG_VERSION, invalidateCatalog, installCatalogSource } from "open-sse/providers/catalogOverride.js";
+import { CATALOG_FILE, CATALOG_VERSION, invalidateCatalog, installCatalogSource } from "open-sse/providers/catalogOverride.js";
+import { saveSyncedPricing } from "@/lib/db/repos/pricingRepo.js";
+import { fetchProviderUpstream } from "open-sse/utils/proxyFetch.js";
+import { jsonLogger } from "@/lib/logging/logger.js";
 
-const CATALOG_URL = "https://models.dev/api.json";
-const FETCH_TIMEOUT_MS = 60000;
-
+export const CATALOG_URL = "https://models.dev/api.json";
+const FETCH_TIMEOUT_MS = 30000;
 export const SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const STARTUP_DELAY_MS = 60 * 1000;   // let the server boot and serve first requests
+const STARTUP_DELAY_MS = 5 * 1000;
 const RETRY_DELAY_MS = 30 * 60 * 1000;
 
 const MODALITY_BY_INPUT = { image: "vision", pdf: "pdf", audio: "audioInput", video: "videoInput" };
-// Ignore limit differences below this: gateways round 200000 vs 202752.
-const LIMIT_TOLERANCE = 0.1;
 
-// 9router provider id -> models.dev provider id: the same gateway under another
-// name. Both halves of the catalog are stored against the local id, so this runs
-// while building rather than on every lookup. Providers absent here keep whatever
-// the local pattern table resolves; names that already match need no entry.
-export const PROVIDER_ALIASES = {
-  "github": "github-copilot",
-  "glm": "zai",
-  "glm-cn": "zhipuai",
-  "claude": "anthropic",
-  "gemini": "google",
-  "kimi": "moonshotai",
-  "kimi-cn": "moonshotai-cn",
-  "qwen": "alibaba",
-  "qwen-cn": "alibaba-cn",
-  "zhipu": "zhipuai",
-  "hunyuan": "tencent",
-  "doubao": "volcengine",
-  "cloudflare-ai": "cloudflare-workers-ai",
+// Map models.dev provider IDs -> local provider IDs
+const UPSTREAM_TO_LOCAL = {
+  google: ["gemini"],
+  "google-vertex": ["vertex"],
+  "google-vertex-anthropic": ["vertex-partner"],
 };
 
-let state = { running: false, lastSync: null, lastError: null, lastResult: null, etag: null, fileVersion: null };
-let timer = null;
+const PARTNER_VENDOR_PROVIDERS = ["anthropic", "deepseek", "alibaba", "zai"];
+
+const syncState = (globalThis.__9r_catalogSync ??= {
+  running: false,
+  lastSync: null,
+  lastError: null,
+  lastResult: null,
+  etag: null,
+  timer: null,
+});
 
 export function getSyncState() {
-  return { ...state, file: CATALOG_FILE, url: CATALOG_URL, intervalMs: SYNC_INTERVAL_MS };
+  return {
+    running: syncState.running,
+    lastSync: syncState.lastSync,
+    lastError: syncState.lastError,
+    lastResult: syncState.lastResult,
+    url: CATALOG_URL,
+    intervalMs: SYNC_INTERVAL_MS,
+  };
 }
 
-// "zai-org/GLM-4.6V:free" -> "glm-4.6v"
-function baseId(modelId) {
-  const withoutVendor = modelId.includes("/") ? modelId.split("/").pop() : modelId;
-  return withoutVendor.toLowerCase().split(":")[0];
+function normalizeRate(costObj) {
+  if (!costObj || typeof costObj !== "object") return null;
+  const input = Number(costObj.input);
+  const output = Number(costObj.output);
+  if (!Number.isFinite(input) && !Number.isFinite(output)) return null;
+  const safeInput = Number.isFinite(input) && input >= 0 ? input : 0;
+  const safeOutput = Number.isFinite(output) && output >= 0 ? output : 0;
+  const cachedRaw = Number(costObj.cache_read ?? costObj.cached);
+  const cacheWriteRaw = Number(costObj.cache_write ?? costObj.cache_creation);
+  const reasoningRaw = Number(costObj.reasoning);
+
+  return {
+    input: safeInput,
+    output: safeOutput,
+    cached: Number.isFinite(cachedRaw) && cachedRaw >= 0 ? cachedRaw : safeInput,
+    cache_creation: Number.isFinite(cacheWriteRaw) && cacheWriteRaw >= 0 ? cacheWriteRaw : safeInput,
+    reasoning: Number.isFinite(reasoningRaw) && reasoningRaw >= 0 ? reasoningRaw : safeOutput,
+  };
+}
+
+function extractPricingAndCapabilities(catalog) {
+  const syncedPricing = { vertex: {}, gemini: {}, "vertex-partner": {} };
+  const capModels = {};
+  const capProviders = {};
+
+  for (const [upstreamId, localIds] of Object.entries(UPSTREAM_TO_LOCAL)) {
+    const prov = catalog?.[upstreamId];
+    if (!prov?.models) continue;
+
+    for (const [rawModelId, model] of Object.entries(prov.models)) {
+      const rate = normalizeRate(model?.cost);
+      const shortId = rawModelId.includes("/") ? rawModelId.split("/").pop() : rawModelId;
+      for (const localId of localIds) {
+        if (rate) {
+          syncedPricing[localId][rawModelId] = rate;
+          if (shortId !== rawModelId && !syncedPricing[localId][shortId]) {
+            syncedPricing[localId][shortId] = rate;
+          }
+        }
+        const declared = {};
+        for (const inp of model?.modalities?.input || []) {
+          const k = MODALITY_BY_INPUT[inp];
+          if (k) declared[k] = true;
+        }
+        if (Object.keys(declared).length) {
+          capModels[`${localId}:${shortId.toLowerCase()}`] = declared;
+        }
+        const ctx = Number(model?.limit?.context || 0);
+        const out = Number(model?.limit?.output || 0);
+        if (ctx > 0 || out > 0) {
+          capProviders[localId] ??= {};
+          capProviders[localId][shortId] = {
+            ...(ctx > 0 ? { contextWindow: ctx } : {}),
+            ...(out > 0 ? { maxOutput: out } : {}),
+          };
+        }
+      }
+    }
+  }
+
+  // Also map Vertex Partner MaaS models from vendor catalogs if not already in google-vertex-anthropic
+  for (const vendor of PARTNER_VENDOR_PROVIDERS) {
+    const prov = catalog?.[vendor];
+    if (!prov?.models) continue;
+    for (const [rawModelId, model] of Object.entries(prov.models)) {
+      const rate = normalizeRate(model?.cost);
+      if (!rate) continue;
+      if (/^(claude-|deepseek-v3|qwen3-|glm-5)/i.test(rawModelId)) {
+        if (!syncedPricing["vertex-partner"][rawModelId]) {
+          syncedPricing["vertex-partner"][rawModelId] = rate;
+        }
+      }
+    }
+  }
+
+  return { syncedPricing, capModels, capProviders };
 }
 
 function writeAtomic(file, contents) {
@@ -58,212 +135,82 @@ function writeAtomic(file, contents) {
   fs.renameSync(`${file}.tmp`, file);
 }
 
-// Trimmed copy of the upstream catalog, kept for the add-models skill: same
-// models, ~470KB instead of 4.3MB.
-function slim(catalog) {
-  const out = {};
-  for (const [providerId, provider] of Object.entries(catalog)) {
-    const models = {};
-    for (const [modelId, model] of Object.entries(provider?.models || {})) {
-      models[modelId] = {
-        i: (model?.modalities?.input || []).filter((x) => x !== "text"),
-        c: model?.limit?.context,
-        o: model?.limit?.output,
-        r: model?.reasoning || undefined,
-      };
-    }
-    out[providerId] = models;
-  }
-  return out;
-}
-
-export function build(catalog, entries) {
-  // Upstream provider id -> the local ids it belongs to, taken from the registry
-  // snapshot so a gateway listed upstream under another name is still filed
-  // under the name requests arrive with. One upstream name can back more than one
-  // local id (glm-cn and zhipu are both zhipuai) and each has to resolve; the
-  // snapshot only covers the built-in registry, so an upstream provider it does
-  // not mention keeps its own name.
-  const localIds = new Map();
-  for (const { provider } of entries) {
-    const upstreamId = PROVIDER_ALIASES[provider] || provider;
-    let locals = localIds.get(upstreamId);
-    if (!locals) localIds.set(upstreamId, (locals = []));
-    if (!locals.includes(provider)) locals.push(provider);
-  }
-
-  // Index once: the raw upstream record per provider+model for limits, and the
-  // modalities each gateway declares for it.
-  const byProvider = {};
-  // Modalities are recorded per gateway upstream and gateways disagree about the
-  // same weights — some do not proxy images at all — so the key is provider +
-  // model. Keying by model id alone let short ids collide across vendors: "auto",
-  // "free" and "efficient" are router modes in one catalog and model names in
-  // another, so a router mode inherited a stranger's vision.
-  const models = {};
-  for (const [providerId, provider] of Object.entries(catalog)) {
-    const locals = localIds.get(providerId) || [providerId];
-    const modelsById = {};
-    const seen = new Set();
-    for (const [modelId, model] of Object.entries(provider?.models || {})) {
-      const id = baseId(modelId);
-      modelsById[id] = model;
-      // One entry per provider+model: several upstream ids can normalize to the
-      // same model (claude-opus-4-thinking:1024, :8192, :32768 …) and must not
-      // stack their modalities.
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const declared = {};
-      for (const input of model?.modalities?.input || []) {
-        const key = MODALITY_BY_INPUT[input];
-        if (key) declared[key] = true;
-      }
-      if (Object.keys(declared).length) {
-        // Filed under every local id requests arrive with, and under the upstream
-        // id too: a custom provider node can carry the upstream name without
-        // appearing in the registry snapshot, and nothing else would resolve for
-        // it. The reader takes whichever key it is handed.
-        for (const local of locals) models[`${local}:${id}`] = declared;
-        if (!locals.includes(providerId)) models[`${providerId}:${id}`] = declared;
-      }
-    }
-    byProvider[providerId] = modelsById;
-  }
-
-  // Limits belong to the gateway — each truncates differently — so only the
-  // matching provider's own numbers are used, keyed by provider + model.
-  const providers = {};
-  for (const { provider, model, contextLength, current } of entries) {
-    const alias = PROVIDER_ALIASES[provider];
-    const upstream = catalog[provider] ? provider : (alias && catalog[alias] ? alias : null);
-    const entry = upstream && byProvider[upstream]?.[baseId(model)];
-    if (!entry) continue;
-
-    const delta = {};
-    const { context, output } = entry.limit || {};
-    if (context > 0 && !contextLength
-      && Math.abs(context - current.contextWindow) / current.contextWindow > LIMIT_TOLERANCE) {
-      delta.contextWindow = context;
-    }
-    if (output > 0
-      && Math.abs(output - current.maxOutput) / current.maxOutput > LIMIT_TOLERANCE) {
-      delta.maxOutput = output;
-    }
-    if (Object.keys(delta).length) (providers[provider] || (providers[provider] = {}))[model] = delta;
-  }
-
-  return { models, providers };
-}
-
-// Snapshot every registered model with the capabilities the hand-written tables
-// resolve on their own, so build() can tell which upstream values are a change.
-//
-// The previous catalog MUST be detached first. Leaving it installed makes each
-// delta relative to the last one, so a value that still agrees with upstream
-// looks like "no change" and is dropped — the file erases itself over two runs.
-async function collectEntries() {
-  const [{ default: registry }, { getCapabilitiesForModel, setCatalogSource }] = await Promise.all([
-    import("open-sse/providers/registry/index.js"),
-    import("open-sse/providers/capabilities.js"),
-  ]);
-  setCatalogSource(null);
-
-  const entries = [];
-  for (const provider of registry) {
-    for (const model of provider.models || []) {
-      entries.push({
-        provider: provider.id,
-        model: model.id,
-        contextLength: model.contextLength,
-        current: getCapabilitiesForModel(provider.id, model.id),
-      });
-    }
-  }
-  return entries;
-}
-
-// Run one sync. Returns a summary, or null when it could not complete.
-export async function syncModelCatalog() {
-  if (state.running) return null;
-  state.running = true;
+export async function syncModelCatalog({ force = false } = {}) {
+  if (syncState.running) return { status: "running" };
+  syncState.running = true;
   try {
     const headers = { accept: "application/json" };
-    // A file written by an older schema has to be rebuilt even when upstream is
-    // unchanged, so only ask upstream for a 304 when the file is current.
-    if (state.etag && state.fileVersion === CATALOG_VERSION) headers["if-none-match"] = state.etag;
-    const response = await fetch(CATALOG_URL, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!force && syncState.etag) headers["if-none-match"] = syncState.etag;
 
-    let result;
+    const response = await fetchProviderUpstream(CATALOG_URL, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+
     if (response.status === 304) {
-      result = { status: "unchanged" };
-    } else if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    } else {
-      // ~23ms to parse, once a day, on a server that is otherwise idle at this
-      // point — not worth a worker thread.
-      const catalog = await response.json();
-      const etag = response.headers.get("etag") || null;
-      const entries = await collectEntries();
-      const { models, providers } = build(catalog, entries);
-      const serialized = JSON.stringify({ v: CATALOG_VERSION, etag, syncedAt: Date.now(), models, providers });
-
-      writeAtomic(CATALOG_FILE, serialized);
-      writeAtomic(CATALOG_RAW_FILE, JSON.stringify(slim(catalog)));
-
-      state.etag = etag;
-      state.fileVersion = CATALOG_VERSION;
-      invalidateCatalog();
-      result = {
-        status: "updated",
-        etag,
-        bytes: Buffer.byteLength(serialized),
-        models: Object.keys(models).length,
-        providers: Object.keys(providers).length,
-      };
-      console.log(`[modelCatalog] ${result.models} models, ${result.providers} providers, ${(result.bytes / 1024).toFixed(1)}KB`);
+      syncState.lastSync = Date.now();
+      syncState.lastError = null;
+      syncState.lastResult = { status: "unchanged" };
+      return syncState.lastResult;
+    }
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} from models.dev`);
     }
 
-    state.lastSync = Date.now();
-    state.lastError = null;
-    state.lastResult = result;
-    return result;
+    const catalog = await response.json();
+    const etag = response.headers.get("etag") || null;
+    const { syncedPricing, capModels, capProviders } = extractPricingAndCapabilities(catalog);
+
+    await saveSyncedPricing(syncedPricing, { source: CATALOG_URL, etag });
+
+    try {
+      const serialized = JSON.stringify({
+        v: CATALOG_VERSION,
+        etag,
+        syncedAt: Date.now(),
+        models: capModels,
+        providers: capProviders,
+      });
+      writeAtomic(CATALOG_FILE, serialized);
+      invalidateCatalog();
+    } catch {
+      // Non-fatal if catalog file path isn't writable
+    }
+
+    const counts = {
+      vertex: Object.keys(syncedPricing.vertex).length,
+      gemini: Object.keys(syncedPricing.gemini).length,
+      "vertex-partner": Object.keys(syncedPricing["vertex-partner"]).length,
+    };
+
+    syncState.etag = etag;
+    syncState.lastSync = Date.now();
+    syncState.lastError = null;
+    syncState.lastResult = { status: "updated", counts, totalModels: counts.vertex + counts.gemini + counts["vertex-partner"] };
+
+    jsonLogger.info("catalog.synced", syncState.lastResult);
+    return syncState.lastResult;
   } catch (error) {
-    state.lastError = error?.message || String(error);
-    console.log(`[modelCatalog] sync failed: ${state.lastError}`);
-    return null;
+    syncState.lastError = error?.message || String(error);
+    jsonLogger.warn("catalog.sync_failed", { error: syncState.lastError });
+    return { status: "error", error: syncState.lastError };
   } finally {
-    // collectEntries() detaches the reader; put it back whatever happened.
     await installCatalogSource().catch(() => {});
-    state.running = false;
+    syncState.running = false;
   }
 }
 
-// The etag lives in the file we wrote, so a restart can resume from it instead
-// of re-downloading 4.3MB to be told nothing changed.
-function restoreEtag() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(CATALOG_FILE, "utf8"));
-    state.etag = parsed.etag || null;
-    state.fileVersion = parsed.v || 1;
-    state.lastSync = fs.statSync(CATALOG_FILE).mtimeMs;
-  } catch {
-    state.etag = null;
-    state.fileVersion = null;
-  }
-}
-
-// Schedule the recurring sync. Disable entirely with MODEL_CATALOG_SYNC=off.
 export function startModelCatalogSync() {
-  if (timer) return;
+  if (syncState.timer) return;
   if (String(process.env.MODEL_CATALOG_SYNC || "").toLowerCase() === "off") return;
-  restoreEtag();
 
   const schedule = (delay) => {
-    timer = setTimeout(async () => {
+    syncState.timer = setTimeout(async () => {
       const result = await syncModelCatalog();
-      schedule(result ? SYNC_INTERVAL_MS : RETRY_DELAY_MS);
+      schedule(result?.status === "error" ? RETRY_DELAY_MS : SYNC_INTERVAL_MS);
     }, delay);
-    timer.unref?.();
+    syncState.timer.unref?.();
   };
   schedule(STARTUP_DELAY_MS);
 }

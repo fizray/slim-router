@@ -1,105 +1,56 @@
 # syntax=docker/dockerfile:1.7
-ARG NODE_IMAGE=node:22.23.4-alpine
-ARG ALPINE_MIRROR=dl-cdn.alpinelinux.org
-ARG NPM_REGISTRY=https://registry.npmjs.org/
-ARG APP_VERSION=unknown
+ARG NODE_IMAGE=node:26.13.1-alpine
+ARG APP_VERSION=2.0.0-hardened
 
-FROM ${NODE_IMAGE} AS base
-ARG ALPINE_MIRROR
+# Stage 1: Build Vite + shadcn/ui SPA
+FROM ${NODE_IMAGE} AS fe-builder
 WORKDIR /app
-
-# Use the official Alpine mirror by default. A repository variable/build arg can
-# override it for environments that require a regional mirror.
-RUN if [ "$ALPINE_MIRROR" != "dl-cdn.alpinelinux.org" ]; then \
-      sed -i "s|dl-cdn.alpinelinux.org|${ALPINE_MIRROR}|g" /etc/apk/repositories; \
-    fi
-
-FROM base AS builder
-ARG NPM_REGISTRY
-
-RUN apk add --no-cache python3 make g++ linux-headers
-
-COPY package.json ./
+COPY package.json package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm install \
-      --registry="${NPM_REGISTRY}" \
-      --fetch-retries=5 \
-      --fetch-retry-factor=2 \
-      --fetch-retry-mintimeout=10000 \
-      --fetch-retry-maxtimeout=120000 \
-      --fetch-timeout=300000
-
-COPY . ./
-ENV NEXT_TELEMETRY_DISABLED=1
+    npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+COPY vite.config.js components.json ./
+COPY client ./client
+COPY public ./public
 RUN npm run build
 
-# https://github.com/decolua/9router/issues/5245
-# wreq-js and playwright-core are lazy runtime dependencies (loaded by
-# lazyRuntime.js via createRequire). Next standalone tracing does not include
-# them, so OpenCode Free fails with HTTP 502 ("resolve is undefined").
-# Install them (with their native bindings/transitive deps) in an isolated dir
-# so the runner stage can copy them into /app/node_modules.
+# Stage 2: Production runtime dependencies ONLY (4 packages: bcryptjs, jose, undici, uuid)
+FROM ${NODE_IMAGE} AS prod-deps
+WORKDIR /app
+COPY package.json package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm \
-    mkdir -p /opt/lazy-runtime && cd /opt/lazy-runtime && \
-    npm init -y >/dev/null && \
-    npm install --no-save \
-      --registry="${NPM_REGISTRY}" \
-      --fetch-retries=5 \
-      --fetch-retry-factor=2 \
-      --fetch-retry-mintimeout=10000 \
-      --fetch-retry-maxtimeout=120000 \
-      --fetch-timeout=300000 \
-      wreq-js playwright-core
+    npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
 
+# Stage 3: Ultra-slim hardened runtime image (Zero Next.js, Zero devDependencies)
 FROM ${NODE_IMAGE} AS runner
-ARG ALPINE_MIRROR
 ARG APP_VERSION
 WORKDIR /app
 
-RUN if [ "$ALPINE_MIRROR" != "dl-cdn.alpinelinux.org" ]; then \
-      sed -i "s|dl-cdn.alpinelinux.org|${ALPINE_MIRROR}|g" /etc/apk/repositories; \
-    fi
-
-LABEL org.opencontainers.image.title="9router" \
+LABEL org.opencontainers.image.title="slim-router" \
+      org.opencontainers.image.source="https://github.com/fizray/slim-router" \
       org.opencontainers.image.version="${APP_VERSION}"
 
 ENV NODE_ENV=production
 ENV PORT=20128
 ENV HOSTNAME=0.0.0.0
-ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATA_DIR=/app/data
+ENV HOME=/tmp
 
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/custom-server.js ./custom-server.js
-COPY --from=builder /app/open-sse ./open-sse
-# Next file tracing can omit sibling files; MITM runs server.js as a separate process.
-COPY --from=builder /app/src/mitm ./src/mitm
-# Standalone node_modules may omit deps only required by the MITM child process.
-COPY --from=builder /app/node_modules/node-forge ./node_modules/node-forge
-# Ensure `next` is available at runtime in case tracing did not include it.
-COPY --from=builder /app/node_modules/next ./node_modules/next
-# sql.js loads dist/sql-wasm.wasm by path at runtime; tracing only follows JS imports,
-# so the last-resort DB driver would abort with ENOENT on the missing binary.
-COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
-# node-machine-id is createRequire-loaded at runtime; tracing omits it.
-COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
-# wreq-js + playwright-core (and deps) are lazy-loaded at runtime and omitted by
-# tracing. See https://github.com/decolua/9router/issues/5245
-COPY --from=builder /opt/lazy-runtime/node_modules/. ./node_modules/
+COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
+COPY --from=fe-builder --chown=node:node /app/dist ./dist
+COPY --chown=node:node package.json ./package.json
+COPY --chown=node:node server ./server
+COPY --chown=node:node src ./src
+COPY --chown=node:node open-sse ./open-sse
+COPY --chown=node:node public ./public
 
-RUN mkdir -p /app/data && chown -R node:node /app && \
-  mkdir -p /app/data-home && chown node:node /app/data-home && \
-  ln -sf /app/data-home /root/.9router 2>/dev/null || true
-
-# Avoid a full distribution upgrade in the runtime image. It makes builds less
-# reproducible and is unrelated to installing the runtime entrypoint helper.
-RUN apk add --no-cache su-exec ffmpeg && \
-  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
-  chmod +x /entrypoint.sh
+RUN mkdir -p /app/data/db /app/data/backups && \
+    chown -R node:node /app/data
 
 EXPOSE 20128
 
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "custom-server.js"]
+USER node
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:20128/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "--import", "./server/loader.js", "server/index.js"]

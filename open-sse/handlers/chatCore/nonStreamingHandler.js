@@ -1,17 +1,13 @@
 import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
 import { openAICompletionToClaudeMessage } from "../../translator/concerns/claudeMessage.js";
-import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
 import { addBufferToUsage, filterUsageForFormat } from "../../utils/usageTracking.js";
 import { createErrorResult } from "../../utils/error.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
-import { unwrapClineEnvelope } from "../../shared/clineEnvelope.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
-import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
-import { decloakToolNames } from "../../utils/claudeCloaking.js";
-import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
+import { appendRequestLog, saveRequestDetail } from "@/lib/db/index.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 
 /**
@@ -223,18 +219,13 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
     return result;
   }
 
-  // Ollama
-  if (targetFormat === FORMATS.OLLAMA) {
-    return ollamaBodyToOpenAI(responseBody);
-  }
-
   return responseBody;
 }
 
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log }) {
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, reqTag, log, traceContext, attemptStartMs, providerUrl }) {
   trackDone();
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
@@ -268,7 +259,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // Unwrap before any consumer reads choices/usage so non-stream clients get a
   // bare OpenAI body and usage tracking sees data.usage. No-op unless the
   // provider opts in via transport.quirks.clineEnvelope.
-  responseBody = unwrapClineEnvelope(responseBody, provider);
+  // Direct response body (no consumer envelope unwrapping)
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
   if (onRequestSuccess) {
@@ -280,7 +271,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   }
 
   // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)
-  responseBody = decloakToolNames(responseBody, toolNameMap);
+  // No OAuth tool decloaking needed
 
   const usage = extractUsageFromResponse(responseBody);
   appendLog({ tokens: usage, status: "200 OK" });
@@ -337,28 +328,40 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   reqLogger.logConvertedResponse(translatedResponse);
 
   const totalLatency = Date.now() - requestStartTime;
-  saveRequestDetail(buildRequestDetail({
-    provider, model, connectionId,
-    latency: { ttft: totalLatency, total: totalLatency },
-    tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
-    request: extractRequestConfig(body, stream),
-    providerRequest: finalBody || translatedBody || null,
-    providerResponse: responseBody || null,
-    response: {
-      content: translatedResponse?.choices?.[0]?.message?.content || translatedResponse?.content || null,
-      thinking: translatedResponse?.choices?.[0]?.message?.reasoning_content || translatedResponse?.reasoning_content || null,
-      finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
-    },
-    pxpipe,
-    status: "success"
-  }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
-    console.error("[RequestDetail] Failed to save:", err.message);
+
+  traceContext?.recordAttemptSpan?.({
+    provider,
+    model,
+    connectionId,
+    targetFormat,
+    startedAtMs: attemptStartMs,
+    durationMs: attemptStartMs ? Math.round(performance.now() - attemptStartMs) : totalLatency,
+    ttftMs: null,
+    httpStatus: 200,
+    status: "success",
+    upstreamRequest: finalBody || translatedBody || null,
+    upstreamUrl: providerUrl,
   });
+
+  traceContext?.finalize?.({
+    provider,
+    model,
+    connectionId,
+    isStream: false,
+    httpStatus: 200,
+    status: "success",
+    ttftMs: null,
+    usage,
+    upstreamRequest: finalBody || translatedBody || null,
+    upstreamResponse: responseBody || null,
+    clientResponse: translatedResponse || null,
+    sourceFormat,
+  }).catch(() => {});
 
   return {
     success: true,
-    response: new Response(JSON.stringify(restoreToolNames(translatedResponse, toolNameMap)), {
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", ...upstreamResponseHeaders(providerResponse.headers) }
+    response: new Response(JSON.stringify(translatedResponse), {
+      headers: { "Content-Type": "application/json", ...upstreamResponseHeaders(providerResponse.headers) }
     })
   };
 }

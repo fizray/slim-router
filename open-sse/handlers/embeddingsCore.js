@@ -1,7 +1,7 @@
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
 import { HTTP_STATUS, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { getExecutor } from "../executors/index.js";
-import { refreshWithRetry } from "../services/tokenRefresh.js";
+import { refreshWithRetry } from "../services/vertexAuth.js";
 import { getEmbeddingAdapter } from "./embeddingProviders/index.js";
 
 /**

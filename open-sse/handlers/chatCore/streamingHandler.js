@@ -7,7 +7,7 @@ import { HTTP_STATUS, STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig
 import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
 import { buildStreamErrorBytes } from "../../utils/streamHelpers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
-import { saveRequestDetail } from "@/lib/usageDb.js";
+import { saveRequestDetail } from "@/lib/db/index.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 
@@ -120,32 +120,47 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 /**
  * Build onStreamComplete callback for streaming usage tracking.
  */
-export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log }) {
+export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, reqTag, log, traceContext, attemptStartMs, providerUrl, targetFormat }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
   const onStreamComplete = (contentObj, usage, ttftAt) => {
+    const ttftMs = ttftAt ? Math.max(0, ttftAt - requestStartTime) : null;
+    const totalMs = Math.max(0, Date.now() - requestStartTime);
     const latency = {
-      ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
-      total: Date.now() - requestStartTime
+      ttft: ttftMs ?? totalMs,
+      total: totalMs
     };
-    const safeContent = contentObj?.content || "[Empty streaming response]";
+    const safeContent = contentObj?.content || "";
     const safeThinking = contentObj?.thinking || null;
 
-    saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId,
-      latency,
-      tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
-      providerRequest: finalBody || translatedBody || null,
-      providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
-      pxpipe,
-      status: "success"
-    }, { id: streamDetailId })).catch(err => {
-      console.error("[RequestDetail] Failed to update streaming content:", err.message);
+    traceContext?.recordAttemptSpan?.({
+      provider,
+      model,
+      connectionId,
+      targetFormat,
+      startedAtMs: attemptStartMs,
+      durationMs: attemptStartMs ? Math.round(performance.now() - attemptStartMs) : totalMs,
+      ttftMs,
+      httpStatus: 200,
+      status: "success",
+      upstreamRequest: finalBody || translatedBody || null,
+      upstreamUrl: providerUrl,
     });
 
-    // Persist stream usage to DB (no console line; the "📊 done" line below is authoritative)
+    traceContext?.finalize?.({
+      provider,
+      model,
+      connectionId,
+      isStream: true,
+      httpStatus: 200,
+      status: "success",
+      ttftMs,
+      usage,
+      upstreamRequest: finalBody || translatedBody || null,
+      upstreamResponse: { content: safeContent, thinking: safeThinking },
+      clientResponse: { content: safeContent, thinking: safeThinking },
+    }).catch(() => {});
+
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE", silent: true });
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
   };

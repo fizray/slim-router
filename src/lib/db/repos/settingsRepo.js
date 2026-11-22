@@ -1,105 +1,94 @@
-import { getAdapter } from "../driver.js";
+import bcrypt from "bcryptjs";
+import { getConfigDb } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-
-const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
-const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
+import { isBuildPhase } from "@/lib/config/env.js";
 
 const DEFAULT_SETTINGS = {
-  cloudEnabled: false,
-  tunnelEnabled: false,
-  tunnelUrl: "",
-  tunnelProvider: "cloudflare",
-  tailscaleEnabled: false,
-  tailscaleUrl: "",
+  requireLogin: true,
+  requireApiKey: true,
+  sessionVersion: 1,
+  fallbackStrategy: "fill-first",
   stickyRoundRobinLimit: 3,
   providerStrategies: {},
-  quotaVisibility: {},
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
   comboStrategies: {},
-  capacityAdapter: {
-    vision: { enabled: true, roundRobin: false, models: [] },
-    pdf: { enabled: false, roundRobin: false, models: [] },
-    audioInput: { enabled: true, roundRobin: false, models: [] },
-    videoInput: { enabled: false, roundRobin: false, models: [] },
-  },
-  requireLogin: true,
-  requireApiKey: true,
-  tunnelDashboardAccess: true,
-  authMode: "password",
-  ssoType: "oidc",
-  oidcIssuerUrl: "",
-  oidcClientId: "",
-  oidcClientSecret: "",
-  oidcScopes: "openid profile email",
-  oidcLoginLabel: "Sign in with OIDC",
-  samlEntryPoint: "",
-  samlIssuer: "urn:9router:sp",
-  samlCert: "",
-  samlLoginLabel: "Sign in with SAML SSO",
-  samlAttributeEmail: "email",
-  samlAttributeName: "name",
-  enableObservability: false,
-  observabilityMaxRecords: 1000,
-  observabilityBatchSize: 20,
-  observabilityFlushIntervalMs: 5000,
-  observabilityMaxJsonSize: 5,
-  outboundProxyEnabled: false,
-  outboundProxyUrl: "",
-  outboundNoProxy: "",
-  mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
-  dnsToolEnabled: {},
-  rtkEnabled: true,
-  headroomEnabled: false,
-  headroomUrl: DEFAULT_HEADROOM_URL,
-  headroomCompressUserMessages: false,
-  headroomTimeoutMs: 3000,
-  cavemanEnabled: false,
-  cavemanLevel: "full",
-  ponytailEnabled: false,
-  ponytailLevel: "full",
-  // User-authored system prompt, injected independently of the built-in savers.
-  customPromptEnabled: false,
-  customPrompt: "",
-  pxpipeEnabled: false,
-  pxpipeAutoInstall: true,
-  pxpipeMinChars: 25000,
-  pxpipeTimeoutMs: 15000,
-  // Per-provider user header overrides applied at dispatch: { [providerId]: { headers: {..} } }
+  globalDailyBudgetUsd: null,
+  globalMonthlyBudgetUsd: null,
   providerOverrides: {},
 };
 
-async function readRaw() {
-  const db = await getAdapter();
-  const row = db.get(`SELECT data FROM settings WHERE id = 1`);
-  return row ? parseJson(row.data, {}) : {};
+// Explicit allow-list for PATCH /api/settings (prevents CWE-915 mass assignment)
+export const MUTABLE_SETTING_KEYS = new Set([
+  "fallbackStrategy",
+  "stickyRoundRobinLimit",
+  "providerStrategies",
+  "comboStrategy",
+  "comboStickyRoundRobinLimit",
+  "comboStrategies",
+  "globalDailyBudgetUsd",
+  "globalMonthlyBudgetUsd",
+  "providerOverrides",
+]);
+
+function getAuthStateCache() {
+  if (!globalThis.__9r_authState) {
+    globalThis.__9r_authState = { sessionVersion: null, ts: 0 };
+  }
+  return globalThis.__9r_authState;
 }
 
-// Merge raw settings with defaults; backward-compat for missing keys
+export function invalidateAuthStateCache() {
+  const st = getAuthStateCache();
+  st.sessionVersion = null;
+  st.ts = 0;
+}
+
+async function ensureBootstrapAdminPassword(db, current) {
+  if (current?.password || isBuildPhase()) return current;
+
+  const envHash = (process.env.ADMIN_PASSWORD_HASH || "").trim();
+  const envPass = (process.env.ADMIN_PASSWORD || "").trim();
+
+  let passwordHash = null;
+  if (envHash) {
+    passwordHash = envHash;
+  } else if (envPass && envPass.length >= 12) {
+    passwordHash = await bcrypt.hash(envPass, 12);
+  } else {
+    throw new Error(
+      "[FATAL][AUTH] No admin password configured in config.sqlite. Set ADMIN_PASSWORD (>= 12 chars) or ADMIN_PASSWORD_HASH in environment."
+    );
+  }
+
+  const next = {
+    ...current,
+    password: passwordHash,
+    sessionVersion: current?.sessionVersion || 1,
+    requireLogin: true,
+    requireApiKey: true,
+  };
+  db.run(
+    "INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+    [stringifyJson(next)]
+  );
+  return next;
+}
+
+async function readRaw() {
+  const db = await getConfigDb();
+  const row = db.get("SELECT data FROM settings WHERE id = 1");
+  const parsed = row ? parseJson(row.data, {}) : {};
+  return ensureBootstrapAdminPassword(db, parsed);
+}
+
 export function mergeWithDefaults(raw) {
   const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
-  for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS)) {
-    if (merged[key] === undefined) {
-      if (
-        key === "outboundProxyEnabled" &&
-        typeof merged.outboundProxyUrl === "string" &&
-        merged.outboundProxyUrl.trim()
-      ) {
-        merged[key] = true;
-      } else {
-        merged[key] = defVal;
-      }
-    }
-  }
-  if (merged.capacityAdapter && typeof merged.capacityAdapter === "object") {
-    for (const capKey of Object.keys(merged.capacityAdapter)) {
-      const entry = merged.capacityAdapter[capKey];
-      if (Array.isArray(entry?.models)) {
-        entry.models = entry.models.map((m) =>
-          m === "oc/mimo-v2.5-free" ? "oc/mimo-v2.6-flash-free" : m
-        );
-      }
-    }
+  // Security invariants: never allow disabling dashboard auth or API key enforcement
+  merged.requireLogin = true;
+  merged.requireApiKey = true;
+  if (!Number.isInteger(merged.sessionVersion) || merged.sessionVersion < 1) {
+    merged.sessionVersion = 1;
   }
   return merged;
 }
@@ -109,37 +98,38 @@ export async function getSettings() {
   return mergeWithDefaults(raw);
 }
 
-// Atomic read-merge-write inside transaction (prevents losing concurrent updates)
+export async function getCurrentSessionVersion() {
+  const cache = getAuthStateCache();
+  if (cache.sessionVersion !== null && Date.now() - cache.ts < 5000) {
+    return cache.sessionVersion;
+  }
+  const settings = await getSettings();
+  cache.sessionVersion = settings.sessionVersion;
+  cache.ts = Date.now();
+  return settings.sessionVersion;
+}
+
 export async function updateSettings(updates) {
-  const db = await getAdapter();
+  const db = await getConfigDb();
   let next;
-  db.transaction(function () {
-    const row = db.get(`SELECT data FROM settings WHERE id = 1`);
+  db.transaction(() => {
+    const row = db.get("SELECT data FROM settings WHERE id = 1");
     const current = row ? parseJson(row.data, {}) : {};
-    next = { ...current, ...updates };
+    next = {
+      ...current,
+      ...updates,
+      requireLogin: true,
+      requireApiKey: true,
+    };
     db.run(
-      `INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
-      [stringifyJson(next)],
+      "INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+      [stringifyJson(next)]
     );
   });
+  invalidateAuthStateCache();
   return mergeWithDefaults(next);
 }
 
-export async function isCloudEnabled() {
-  const settings = await getSettings();
-  return settings.cloudEnabled === true;
-}
-
-export async function getCloudUrl() {
-  const settings = await getSettings();
-  return (
-    settings.cloudUrl ||
-    process.env.CLOUD_URL ||
-    process.env.NEXT_PUBLIC_CLOUD_URL ||
-    ""
-  );
-}
-
 export async function exportSettings() {
-  return await readRaw();
+  return readRaw();
 }

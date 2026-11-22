@@ -106,15 +106,20 @@ export async function POST(request, { params }) {
 
     const response = await handleChat(newRequest);
 
-    if (stream) {
-      // Transform OpenAI SSE => Gemini SSE on the fly.
-      // The @google/genai SDK always uses :streamGenerateContent?alt=sse and
-      // expects Gemini SSE chunks (no [DONE] sentinel — stream just closes).
-      return transformOpenAISSEToGeminiSSE(response, model);
-    } else {
-      // Convert OpenAI JSON response => Gemini GenerateContentResponse
-      return await convertOpenAIResponseToGemini(response, model);
+    const out = stream
+      ? transformOpenAISSEToGeminiSSE(response, model)
+      : await convertOpenAIResponseToGemini(response, model);
+
+    // Preserve tracing & rate-limit response headers on v1beta responses
+    if (out && response?.headers) {
+      const mergedHeaders = new Headers(out.headers);
+      for (const h of ["x-trace-id", "x-router-provider", "x-router-model", "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens"]) {
+        const val = response.headers.get(h);
+        if (val) mergedHeaders.set(h, val);
+      }
+      return new Response(out.body, { status: out.status, statusText: out.statusText, headers: mergedHeaders });
     }
+    return out;
   } catch (error) {
     console.log("Error handling Gemini request:", error);
     return Response.json(

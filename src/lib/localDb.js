@@ -1,21 +1,22 @@
-// Shim → re-export from new SQLite-based DB layer (src/lib/db/)
-// Kept for backward compatibility with existing imports.
+// Shim -> re-export from 3-file SQLite DB layer (src/lib/db/)
 export {
-  getSettings, updateSettings, isCloudEnabled, getCloudUrl,
+  getSettings, updateSettings, exportSettings, getCurrentSessionVersion,
+  invalidateAuthStateCache, MUTABLE_SETTING_KEYS,
   getProviderConnections, getProviderConnectionById,
   createProviderConnection, updateProviderConnection,
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
+  maskConnectionForApi,
   getProviderNodes, getProviderNodeById,
   createProviderNode, updateProviderNode, deleteProviderNode,
-  getProxyPools, getProxyPoolById,
-  createProxyPool, updateProxyPool, deleteProxyPool,
-  getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  maskNodeForApi,
+  getApiKeys, getApiKeyById, getApiKeyByKey, authenticateApiKey,
+  createApiKey, updateApiKey, deleteApiKey, validateApiKey,
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,
   getModelAliases, setModelAlias, deleteModelAlias,
   getCustomModels, addCustomModel, deleteCustomModel,
-  getMitmAlias, setMitmAliasAll,
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,
-  exportDb, importDb,
+  getDisabledModels, getDisabledByProvider, disableModels, enableModels,
+  exportDb, importDb, initDb,
 } from "@/lib/db/index.js";

@@ -1,33 +1,11 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { getModelMeta } from "../config/providerModels.js";
-import { parseVertexSaJson, refreshVertexToken, refreshGoogleToken } from "../services/tokenRefresh.js";
+import { parseVertexSaJson, parseVertexAdcJson, refreshVertexToken, refreshGoogleToken } from "../services/vertexAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 
 // Cache project IDs resolved from raw API keys { apiKey → projectId }
 const projectIdCache = new Map();
-
-/**
- * Parse Google ADC user credential JSON from apiKey string.
- * This is the format produced by `gcloud auth application-default login`.
- */
-function parseVertexAdcJson(apiKey) {
-  if (typeof apiKey !== "string") return null;
-  try {
-    const parsed = JSON.parse(apiKey);
-    if (
-      parsed.type === "authorized_user" &&
-      parsed.client_id &&
-      parsed.client_secret &&
-      parsed.refresh_token
-    ) {
-      return parsed;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Resolve GCP project ID from a raw Vertex API key.

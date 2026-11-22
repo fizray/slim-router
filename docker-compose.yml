@@ -1,30 +1,39 @@
 services:
-  9router:
-    image: decolua/9router:latest
-    container_name: 9router
-    restart: always
+  slim-router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: slim-router:latest
+    container_name: slim-router
+    restart: unless-stopped
+    # Bind strictly to loopback so reverse proxy (Nginx/Caddy/Traefik) or VPN handles TLS
     ports:
-      - "20128:20128"
-    volumes:
-      - 9router-data:/app/data
+      - "127.0.0.1:20128:20128"
     env_file:
       - .env
     environment:
-      DATA_DIR: /app/data
+      NODE_ENV: production
       PORT: "20128"
       HOSTNAME: "0.0.0.0"
-      NODE_ENV: production
-      HEADROOM_URL: http://headroom:8787
-    depends_on:
-      - headroom
-
-  headroom:
-    image: ghcr.io/chopratejas/headroom:latest
-    container_name: headroom
-    restart: always
-    ports:
-      - "127.0.0.1:8787:8787"
+      DATA_DIR: /app/data
+      HOME: /tmp
+    volumes:
+      - slim-router-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
-  9router-data:
-    name: 9router-data
+  slim-router-data:
+    name: slim-router-data
