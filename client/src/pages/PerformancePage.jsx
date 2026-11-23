@@ -27,6 +27,15 @@ export function PerformancePage() {
   const s = data?.summary || {};
   const ts = data?.timeseries || [];
   const models = data?.byModel || [];
+  const latencySeries = ts.map((row) => {
+    const total = Math.max(0, Number(row.avgLatencyMs || 0));
+    const ttft = Math.min(total, Math.max(0, Number(row.avgTtftMs || 0)));
+    return {
+      ...row,
+      avgTtftMs: ttft,
+      avgGenMs: Math.max(0, total - ttft),
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -51,21 +60,17 @@ export function PerformancePage() {
       </div>
 
       <SvgMultiBarChart
-        title="Latency & TTFT Overlap (ms)"
-        description="Total latency bar overlapped with Time-to-First-Token (TTFT)"
-        data={ts}
+        title="Latency Breakdown (TTFT + Generation)"
+        description="Stacked Time-to-First-Token (TTFT) and generation duration per bucket"
+        data={latencySeries}
         xKey="bucket"
-        mode="overlap"
+        mode="stacked"
+        totalLabel="Total Latency"
         series={[
-          { key: "avgLatencyMs", label: "Total Latency", color: "#3b82f6", opacity: 0.3 },
-          { key: "avgTtftMs", label: "TTFT (inner)", color: "#10b981", opacity: 0.92 },
+          { key: "avgTtftMs", label: "TTFT", color: "#10b981", opacity: 0.9 },
+          { key: "avgGenMs", label: "Generation", color: "#3b82f6", opacity: 0.82 },
         ]}
         formatY={(v) => fmtMs(v)}
-        extraTooltip={(row) =>
-          row.avgLatencyMs != null && row.avgTtftMs != null
-            ? `Generation: ${fmtMs(Math.max(0, row.avgLatencyMs - row.avgTtftMs))}`
-            : null
-        }
       />
 
       <Card>
