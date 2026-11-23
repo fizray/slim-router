@@ -4,7 +4,7 @@ import {
   markAccountUnavailable,
   clearAccountError,
 } from "../services/auth.js";
-import { authenticateApiKey, getCustomModels } from "@/lib/localDb";
+import { authenticateApiKey, getCustomModels, getProviderConnections } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
 import { checkAndReserveGovernance } from "../services/governance.js";
@@ -50,7 +50,17 @@ export async function handleStt(request) {
 
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
-  const { provider, model } = modelInfo;
+  let { provider, model } = modelInfo;
+
+  // For unprefixed gemini-* STT models (e.g. "gemini-3.5-transcribe"), auto-fallback to active Vertex AI
+  // when Google AI Studio ("gemini") has no active credentials configured.
+  if (!String(modelStr).includes("/") && provider === "gemini") {
+    const geminiConns = await getProviderConnections({ provider: "gemini", isActive: true });
+    if (geminiConns.length === 0) {
+      const vertexConns = await getProviderConnections({ provider: "vertex", isActive: true });
+      if (vertexConns.length > 0) provider = "vertex";
+    }
+  }
 
   const keyAccessDenied = await enforceKeyAccessResolved(
     await getKeyAccessContext(request, apiKeyRecord),
@@ -124,7 +134,14 @@ export async function handleStt(request) {
 
     if (result.success) {
       await clearAccountError(credentials.connectionId, credentials, model);
-      await trace.finalize({ provider, model, connectionId: credentials.connectionId, httpStatus: 200, status: "success" });
+      await trace.finalize({
+        provider,
+        model,
+        connectionId: credentials.connectionId,
+        httpStatus: 200,
+        status: "success",
+        usage: result.usage || null,
+      });
       return trace.attachResponseHeaders(result.response, { provider, model, rateLimitHeaders: gov.headers });
     }
 

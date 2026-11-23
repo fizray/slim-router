@@ -35,7 +35,16 @@ export default {
     { id: "veo-3.1-fast-generate-preview", name: "Veo 3.1 Fast (Preview)", params: ["duration", "aspect_ratio", "resolution", "negative_prompt", "seed", "storage_uri", "generate_audio"], kind: "video" },
     { id: "veo-3.0-generate-001", name: "Veo 3", params: ["duration", "aspect_ratio", "resolution", "negative_prompt", "seed", "storage_uri", "generate_audio"], kind: "video" },
     { id: "veo-2.0-generate-001", name: "Veo 2", params: ["duration", "aspect_ratio", "negative_prompt", "seed", "storage_uri"], kind: "video" },
+    { id: "gemini-3.5-transcribe", name: "Gemini 3.5 Transcribe (Dedicated STT)", params: ["language", "prompt"], kind: "stt", defaultLocation: "global" },
+    { id: "gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite (STT)", params: ["language", "prompt"], kind: "stt" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash (STT)", params: ["language", "prompt"], kind: "stt" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro (STT)", params: ["language", "prompt"], kind: "stt" },
   ],
-  serviceKinds: ["llm", "imageToText", "video"],
+  serviceKinds: ["llm", "imageToText", "video", "stt"],
   videoConfig: { baseUrl: "https://aiplatform.googleapis.com" },
+  sttConfig: {
+    baseUrl: "https://aiplatform.googleapis.com",
+    authType: "vertex",
+    format: "vertex-stt",
+  },
 };
