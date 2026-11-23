@@ -1,19 +1,72 @@
 import { useState, useEffect, useCallback } from "react";
 import { RefreshCw, Search, X, FileImage } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { fmtMs, fmtNum, fmtUsd, fmtBytes } from "@/lib/utils";
+import { fmtMs, fmtNum, fmtUsd, fmtBytes, fmtPct } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, NativeSelect } from "@/components/ui/input";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 
+function getCacheStats(t) {
+  const prompt = Number(t?.prompt_tokens || 0);
+  const hit = Number(t?.cached_read_tokens || 0);
+  const write = Number(t?.cache_write_tokens || 0);
+  const miss = t?.uncached_input_tokens != null
+    ? Number(t.uncached_input_tokens)
+    : Math.max(0, prompt - hit);
+  const isHit = hit > 0;
+  const hitPct = prompt > 0 ? (hit / prompt) * 100 : 0;
+  return { prompt, hit, miss, write, isHit, hitPct };
+}
+
+function CacheCell({ trace }) {
+  const c = getCacheStats(trace);
+  const tooltip = `Prompt: ${c.prompt.toLocaleString()} | Hit: ${c.hit.toLocaleString()} (${c.hitPct.toFixed(1)}%) | Miss: ${c.miss.toLocaleString()}${c.write > 0 ? ` | Write: ${c.write.toLocaleString()}` : ""}${trace?.cache_net_savings ? ` | Saved: ${fmtUsd(trace.cache_net_savings)}` : ""}`;
+  return (
+    <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap" title={tooltip}>
+      <Badge variant={c.isHit ? "info" : "secondary"} className="px-1.5 py-0 text-[10px] font-semibold">
+        {c.isHit ? "HIT" : "MISS"}
+      </Badge>
+      <span className={`font-mono text-[11px] ${c.isHit ? "text-sky-600 dark:text-sky-400 font-medium" : "text-muted-foreground"}`}>
+        {c.isHit ? `${fmtNum(c.hit)} (${Math.round(c.hitPct)}%)` : `${fmtNum(c.miss)} miss`}
+      </span>
+    </div>
+  );
+}
+
 function TraceDetailContent({ selected, detailLoading }) {
   if (detailLoading) {
     return <div className="py-8 text-center text-xs text-muted-foreground">Loading trace detail...</div>;
   }
+  const t = selected.trace || {};
+  const c = getCacheStats(t);
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="rounded-md border p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Cache Status</div>
+          <div className="mt-1 flex items-center gap-1.5">
+            <Badge variant={c.isHit ? "info" : "secondary"}>{c.isHit ? "HIT" : "MISS"}</Badge>
+            <span className="font-mono text-xs font-semibold text-sky-500">{fmtPct(c.hitPct)}</span>
+          </div>
+        </div>
+        <div className="rounded-md border p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Cached Read</div>
+          <div className="mt-1 font-mono text-xs font-semibold text-sky-500">{fmtNum(c.hit)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground">Miss: {fmtNum(c.miss)}</div>
+        </div>
+        <div className="rounded-md border p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Tokens (In/Out)</div>
+          <div className="mt-1 font-mono text-xs font-semibold">{fmtNum(c.prompt)} / {fmtNum(t.completion_tokens || 0)}</div>
+          {c.write > 0 && <div className="text-[10px] font-mono text-violet-500">Write: {fmtNum(c.write)}</div>}
+        </div>
+        <div className="rounded-md border p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Cache Saved</div>
+          <div className="mt-1 font-mono text-xs font-semibold text-emerald-500">{fmtUsd(t.cache_net_savings || 0)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground">Total: {fmtUsd(t.cost_total || 0)}</div>
+        </div>
+      </div>
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Span Waterfall</div>
         <div className="space-y-1.5">
@@ -75,7 +128,7 @@ export function TracesPage() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: "", provider: "", search: "" });
+  const [filters, setFilters] = useState({ status: "", provider: "", cache: "", search: "" });
   const [selected, setSelected] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
@@ -85,6 +138,7 @@ export function TracesPage() {
       const qs = new URLSearchParams({ limit: "50" });
       if (filters.status) qs.set("status", filters.status);
       if (filters.provider) qs.set("provider", filters.provider);
+      if (filters.cache) qs.set("cache", filters.cache);
       if (filters.search) qs.set("search", filters.search);
       const data = await apiFetch(`/api/analytics/traces?${qs}`);
       setItems(data.items || []);
@@ -128,7 +182,7 @@ export function TracesPage() {
               onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
             />
           </div>
-          <div className="grid grid-cols-2 gap-2 sm:flex">
+          <div className="grid grid-cols-3 gap-2 sm:flex">
             <NativeSelect className="sm:w-36" value={filters.provider} onChange={(e) => setFilters((f) => ({ ...f, provider: e.target.value }))}>
               <option value="">All Providers</option>
               <option value="vertex">vertex</option>
@@ -139,6 +193,11 @@ export function TracesPage() {
               <option value="">All Status</option>
               <option value="success">Success</option>
               <option value="error">Error</option>
+            </NativeSelect>
+            <NativeSelect className="sm:w-32" value={filters.cache} onChange={(e) => setFilters((f) => ({ ...f, cache: e.target.value }))}>
+              <option value="">All Cache</option>
+              <option value="hit">Cache Hit</option>
+              <option value="miss">Cache Miss</option>
             </NativeSelect>
           </div>
         </CardContent>
@@ -151,7 +210,7 @@ export function TracesPage() {
         ) : (
           items.map((t) => (
             <Card key={t.trace_id} className="cursor-pointer active:scale-[0.99] transition-transform" onClick={() => openTrace(t.trace_id)}>
-              <CardContent className="p-3.5 space-y-1.5">
+              <CardContent className="p-3.5 space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <Badge variant={t.status === "success" ? "success" : "destructive"}>{t.http_status || t.status}</Badge>
@@ -159,9 +218,9 @@ export function TracesPage() {
                   </div>
                   <span className="font-mono text-[11px] text-muted-foreground shrink-0">{new Date(t.epoch_ms).toLocaleTimeString()}</span>
                 </div>
-                <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
-                  <span className="truncate">{t.endpoint}</span>
-                  <span className="shrink-0 ml-2">{fmtMs(t.total_ms)} · {fmtUsd(t.cost_total)}</span>
+                <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-muted-foreground">
+                  <CacheCell trace={t} />
+                  <span className="shrink-0">{fmtMs(t.total_ms)} · {fmtUsd(t.cost_total)}</span>
                 </div>
               </CardContent>
             </Card>
@@ -182,12 +241,13 @@ export function TracesPage() {
                   <TableHead>Endpoint</TableHead>
                   <TableHead className="text-right">Latency</TableHead>
                   <TableHead className="text-right">Tokens</TableHead>
+                  <TableHead className="text-right">Cache</TableHead>
                   <TableHead className="text-right">Cost</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {items.length === 0 ? (
-                  <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No traces match your filter.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No traces match your filter.</TableCell></TableRow>
                 ) : (
                   items.map((t) => (
                     <TableRow
@@ -210,6 +270,7 @@ export function TracesPage() {
                       <TableCell className="font-mono text-[11px] text-muted-foreground">{t.endpoint}</TableCell>
                       <TableCell className="text-right font-mono">{fmtMs(t.total_ms)}</TableCell>
                       <TableCell className="text-right font-mono">{fmtNum((t.prompt_tokens || 0) + (t.completion_tokens || 0))}</TableCell>
+                      <TableCell className="text-right"><CacheCell trace={t} /></TableCell>
                       <TableCell className="text-right font-mono">{fmtUsd(t.cost_total)}</TableCell>
                     </TableRow>
                   ))
