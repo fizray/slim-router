@@ -16,6 +16,7 @@ import { makeKv } from "../helpers/kvStore.js";
 
 const userPricingKv = makeKv("pricing");
 const syncedPricingKv = makeKv("pricing_synced");
+const syncedCatalogKv = makeKv("catalog_models");
 const CACHE_TTL_MS = 5000;
 
 function getCache() {
@@ -23,6 +24,8 @@ function getCache() {
     merged: null,
     user: null,
     synced: null,
+    catalog: null,
+    catalogExpiresAt: 0,
     expiresAt: 0,
   });
 }
@@ -32,6 +35,8 @@ function invalidate() {
   c.merged = null;
   c.user = null;
   c.synced = null;
+  c.catalog = null;
+  c.catalogExpiresAt = 0;
   c.expiresAt = 0;
 }
 
@@ -194,6 +199,35 @@ export async function resetPricing(provider, model) {
   });
   invalidate();
   return await getPricing();
+}
+
+export async function saveSyncedCatalog(catalogByProvider) {
+  const db = await getAdapter();
+  db.transaction(() => {
+    db.run(`DELETE FROM kv WHERE scope = 'catalog_models'`);
+    for (const [provider, models] of Object.entries(catalogByProvider || {})) {
+      if (!Array.isArray(models) || models.length === 0) continue;
+      db.run(
+        `INSERT INTO kv(scope, key, value) VALUES('catalog_models', ?, ?)`,
+        [provider, stringifyJson(models)]
+      );
+    }
+  });
+  invalidate();
+}
+
+export async function getSyncedCatalog() {
+  const c = getCache();
+  const now = Date.now();
+  if (c.catalog && c.catalogExpiresAt > now) return c.catalog;
+  const raw = await syncedCatalogKv.getAll();
+  const out = {};
+  for (const [provider, list] of Object.entries(raw || {})) {
+    if (Array.isArray(list)) out[provider] = list;
+  }
+  c.catalog = out;
+  c.catalogExpiresAt = now + CACHE_TTL_MS;
+  return out;
 }
 
 export async function resetAllPricing() {

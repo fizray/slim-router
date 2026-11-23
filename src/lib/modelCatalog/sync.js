@@ -1,16 +1,17 @@
 /**
- * Dynamic Model Capabilities & Live Pricing Sync from https://models.dev/api.json
+ * Dynamic Model Catalog & Live Pricing Sync from https://models.dev/api.json
  *
- * Scoped strictly to Google AI Studio (gemini), Google Vertex AI (vertex),
+ * Scoped strictly to Google Vertex AI (vertex), Google AI Studio (gemini),
  * and Vertex AI Partner Models (vertex-partner).
+ * - Persists full model catalog into config.sqlite (kv scope 'catalog_models')
+ * - Persists live $/1M token pricing into config.sqlite (kv scope 'pricing_synced')
  * - Writes capability overrides to DATA_DIR/model-catalog.json
- * - Writes live $/1M token pricing directly into config.sqlite (kv scope 'pricing_synced')
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { CATALOG_FILE, CATALOG_VERSION, invalidateCatalog, installCatalogSource } from "open-sse/providers/catalogOverride.js";
-import { saveSyncedPricing } from "@/lib/db/repos/pricingRepo.js";
+import { saveSyncedPricing, saveSyncedCatalog } from "@/lib/db/repos/pricingRepo.js";
 import { fetchProviderUpstream } from "open-sse/utils/proxyFetch.js";
 import { jsonLogger } from "@/lib/logging/logger.js";
 
@@ -21,14 +22,7 @@ const STARTUP_DELAY_MS = 5 * 1000;
 const RETRY_DELAY_MS = 30 * 60 * 1000;
 
 const MODALITY_BY_INPUT = { image: "vision", pdf: "pdf", audio: "audioInput", video: "videoInput" };
-
-// Map models.dev provider IDs -> local provider IDs
-const UPSTREAM_TO_LOCAL = {
-  google: ["gemini"],
-  "google-vertex": ["vertex"],
-  "google-vertex-anthropic": ["vertex-partner"],
-};
-
+const GOOGLE_FIRST_PARTY_RE = /^(?:google\/)?(?:gemini|gemma|imagen|veo|text-embedding|embedding|multimodalembedding)/i;
 const PARTNER_VENDOR_PROVIDERS = ["anthropic", "deepseek", "alibaba", "zai"];
 
 const syncState = (globalThis.__9r_catalogSync ??= {
@@ -71,62 +65,111 @@ function normalizeRate(costObj) {
   };
 }
 
+function inferModelKind(modelId, model) {
+  const id = String(modelId || "").toLowerCase();
+  const outputs = Array.isArray(model?.modalities?.output) ? model.modalities.output : [];
+  if (id.includes("embedding")) return "embedding";
+  if (id.startsWith("veo") || id.includes("/veo")) return "video";
+  if (id.startsWith("imagen") || id.includes("-image") || id.includes("nano-banana") || (outputs.includes("image") && !outputs.includes("text"))) {
+    return "image";
+  }
+  if (id.includes("-tts") || id.endsWith("tts") || (outputs.includes("audio") && !outputs.includes("text"))) {
+    return "tts";
+  }
+  return "llm";
+}
+
 function extractPricingAndCapabilities(catalog) {
   const syncedPricing = { vertex: {}, gemini: {}, "vertex-partner": {} };
+  const syncedCatalog = { vertex: [], gemini: [], "vertex-partner": [] };
+  const seenCatalog = { vertex: new Set(), gemini: new Set(), "vertex-partner": new Set() };
   const capModels = {};
   const capProviders = {};
 
-  for (const [upstreamId, localIds] of Object.entries(UPSTREAM_TO_LOCAL)) {
-    const prov = catalog?.[upstreamId];
-    if (!prov?.models) continue;
-
-    for (const [rawModelId, model] of Object.entries(prov.models)) {
-      const rate = normalizeRate(model?.cost);
-      const shortId = rawModelId.includes("/") ? rawModelId.split("/").pop() : rawModelId;
-      for (const localId of localIds) {
-        if (rate) {
-          syncedPricing[localId][rawModelId] = rate;
-          if (shortId !== rawModelId && !syncedPricing[localId][shortId]) {
-            syncedPricing[localId][shortId] = rate;
-          }
-        }
-        const declared = {};
-        for (const inp of model?.modalities?.input || []) {
-          const k = MODALITY_BY_INPUT[inp];
-          if (k) declared[k] = true;
-        }
-        if (Object.keys(declared).length) {
-          capModels[`${localId}:${shortId.toLowerCase()}`] = declared;
-        }
-        const ctx = Number(model?.limit?.context || 0);
-        const out = Number(model?.limit?.output || 0);
-        if (ctx > 0 || out > 0) {
-          capProviders[localId] ??= {};
-          capProviders[localId][shortId] = {
-            ...(ctx > 0 ? { contextWindow: ctx } : {}),
-            ...(out > 0 ? { maxOutput: out } : {}),
-          };
-        }
+  function recordModel(localId, rawModelId, model) {
+    const shortId = rawModelId.includes("/") ? rawModelId.split("/").pop() : rawModelId;
+    const rate = normalizeRate(model?.cost);
+    if (rate) {
+      syncedPricing[localId][rawModelId] = rate;
+      if (shortId !== rawModelId && !syncedPricing[localId][shortId]) {
+        syncedPricing[localId][shortId] = rate;
       }
+    }
+
+    const declared = {};
+    for (const inp of model?.modalities?.input || []) {
+      const k = MODALITY_BY_INPUT[inp];
+      if (k) declared[k] = true;
+    }
+    if (Object.keys(declared).length) {
+      capModels[`${localId}:${shortId.toLowerCase()}`] = declared;
+    }
+
+    const ctx = Number(model?.limit?.context || 0);
+    const out = Number(model?.limit?.output || 0);
+    if (ctx > 0 || out > 0) {
+      capProviders[localId] ??= {};
+      capProviders[localId][shortId] = {
+        ...(ctx > 0 ? { contextWindow: ctx } : {}),
+        ...(out > 0 ? { maxOutput: out } : {}),
+      };
+    }
+
+    if (!seenCatalog[localId].has(rawModelId)) {
+      seenCatalog[localId].add(rawModelId);
+      syncedCatalog[localId].push({
+        id: rawModelId,
+        name: model?.name || shortId,
+        kind: inferModelKind(rawModelId, model),
+        contextWindow: ctx || null,
+        maxOutput: out || null,
+        vision: !!declared.vision,
+        reasoning: !!model?.reasoning,
+        releaseDate: model?.release_date || null,
+      });
     }
   }
 
-  // Also map Vertex Partner MaaS models from vendor catalogs if not already in google-vertex-anthropic
+  // 1. Google AI Studio (google -> gemini)
+  for (const [rawModelId, model] of Object.entries(catalog?.google?.models || {})) {
+    recordModel("gemini", rawModelId, model);
+  }
+
+  // 2. Google Vertex AI (google-vertex -> split first-party Google models into vertex, third-party into vertex-partner)
+  for (const [rawModelId, model] of Object.entries(catalog?.["google-vertex"]?.models || {})) {
+    const target = GOOGLE_FIRST_PARTY_RE.test(rawModelId) ? "vertex" : "vertex-partner";
+    recordModel(target, rawModelId, model);
+  }
+
+  // 3. Google Vertex Anthropic (google-vertex-anthropic -> vertex-partner)
+  for (const [rawModelId, model] of Object.entries(catalog?.["google-vertex-anthropic"]?.models || {})) {
+    recordModel("vertex-partner", rawModelId, model);
+  }
+
+  // 4. Additional Vertex Partner MaaS pricing fallback from vendor catalogs
   for (const vendor of PARTNER_VENDOR_PROVIDERS) {
     const prov = catalog?.[vendor];
     if (!prov?.models) continue;
     for (const [rawModelId, model] of Object.entries(prov.models)) {
+      if (!/^(claude-|deepseek-v3|qwen3-|glm-5)/i.test(rawModelId)) continue;
       const rate = normalizeRate(model?.cost);
-      if (!rate) continue;
-      if (/^(claude-|deepseek-v3|qwen3-|glm-5)/i.test(rawModelId)) {
-        if (!syncedPricing["vertex-partner"][rawModelId]) {
-          syncedPricing["vertex-partner"][rawModelId] = rate;
-        }
+      if (rate && !syncedPricing["vertex-partner"][rawModelId]) {
+        syncedPricing["vertex-partner"][rawModelId] = rate;
       }
     }
   }
 
-  return { syncedPricing, capModels, capProviders };
+  // Sort synced catalog newest-first, then alphabetically
+  for (const list of Object.values(syncedCatalog)) {
+    list.sort((a, b) => {
+      const da = a.releaseDate || "";
+      const db = b.releaseDate || "";
+      if (da !== db) return db.localeCompare(da);
+      return a.id.localeCompare(b.id);
+    });
+  }
+
+  return { syncedPricing, syncedCatalog, capModels, capProviders };
 }
 
 function writeAtomic(file, contents) {
@@ -160,9 +203,12 @@ export async function syncModelCatalog({ force = false } = {}) {
 
     const catalog = await response.json();
     const etag = response.headers.get("etag") || null;
-    const { syncedPricing, capModels, capProviders } = extractPricingAndCapabilities(catalog);
+    const { syncedPricing, syncedCatalog, capModels, capProviders } = extractPricingAndCapabilities(catalog);
 
-    await saveSyncedPricing(syncedPricing, { source: CATALOG_URL, etag });
+    await Promise.all([
+      saveSyncedPricing(syncedPricing, { source: CATALOG_URL, etag }),
+      saveSyncedCatalog(syncedCatalog),
+    ]);
 
     try {
       const serialized = JSON.stringify({
@@ -179,9 +225,9 @@ export async function syncModelCatalog({ force = false } = {}) {
     }
 
     const counts = {
-      vertex: Object.keys(syncedPricing.vertex).length,
-      gemini: Object.keys(syncedPricing.gemini).length,
-      "vertex-partner": Object.keys(syncedPricing["vertex-partner"]).length,
+      vertex: syncedCatalog.vertex.length,
+      gemini: syncedCatalog.gemini.length,
+      "vertex-partner": syncedCatalog["vertex-partner"].length,
     };
 
     syncState.etag = etag;

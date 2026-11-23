@@ -47,9 +47,10 @@ export {
   getCustomModels, addCustomModel, deleteCustomModel,
 } from "./repos/aliasRepo.js";
 
-// Pricing (100% dynamic live synced + user override)
+// Pricing & Dynamic Model Catalog (100% dynamic live synced + user override)
 export {
-  getPricing, getPricingDetails, getPricingForModel, saveSyncedPricing, updatePricing, resetPricing, resetAllPricing,
+  getPricing, getPricingDetails, getPricingForModel, saveSyncedPricing,
+  saveSyncedCatalog, getSyncedCatalog, updatePricing, resetPricing, resetAllPricing,
 } from "./repos/pricingRepo.js";
 
 // Disabled models

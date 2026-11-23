@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { getModelAliases, setModelAlias, getCustomModels, getProviderConnections, getPricingDetails } from "@/lib/db/index.js";
+import {
+  getModelAliases,
+  setModelAlias,
+  getCustomModels,
+  getProviderConnections,
+  getPricingDetails,
+  getSyncedCatalog,
+} from "@/lib/db/index.js";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { getProviderAlias, ALIAS_TO_ID } from "@/shared/constants/providers";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
@@ -15,15 +22,16 @@ function resolveRate(pricingMap, provider, modelId) {
   return null;
 }
 
-// GET /api/models - Full catalog across Vertex AI, Google AI Studio & Vertex Partner (all kinds, disabled state, pricing, connections)
+// GET /api/models - Full catalog merging Registry + Live Synced models.dev Catalog + Custom Models
 export async function GET() {
   try {
-    const [modelAliases, disabled, customModels, connections, pricingDetails] = await Promise.all([
+    const [modelAliases, disabled, customModels, connections, pricingDetails, syncedCatalog] = await Promise.all([
       getModelAliases(),
       getDisabledModels(),
       getCustomModels(),
       getProviderConnections(),
       getPricingDetails(),
+      getSyncedCatalog(),
     ]);
 
     const activeConnectionsByProvider = {};
@@ -32,86 +40,46 @@ export async function GET() {
       activeConnectionsByProvider[c.provider] = (activeConnectionsByProvider[c.provider] || 0) + 1;
     }
 
+    const providerMeta = new Map(
+      REGISTRY.map((entry) => [
+        entry.id,
+        {
+          name: entry.display?.name || entry.id,
+          alias: entry.alias || getProviderAlias(entry.id) || entry.id,
+        },
+      ])
+    );
+
     const models = [];
     const seen = new Set();
 
-    for (const entry of REGISTRY) {
-      const providerId = entry.id;
-      const providerAlias = entry.alias || getProviderAlias(providerId) || providerId;
+    function pushModel({ providerId, providerAlias, providerName, id, name, kind, source, custom = false, capsOverride = null, contextLength = null, maxOutputTokens = null }) {
+      const cleanKind = kind || "llm";
+      const key = `${providerId}/${id}/${cleanKind}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+
       const disabledList = new Set([
         ...(disabled?.[providerId] || []),
         ...(disabled?.[providerAlias] || []),
       ]);
-
-      for (const m of entry.models || []) {
-        const kind = m.kind || m.type || "llm";
-        const key = `${providerId}/${m.id}/${kind}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        const fullModel = `${providerId}/${m.id}`;
-        const c = getCapabilitiesForModel(providerId, m.id);
-        const rate = resolveRate(pricingDetails?.pricing, providerId, m.id);
-
-        models.push({
-          provider: providerId,
-          providerName: entry.display?.name || providerId,
-          providerAlias,
-          model: m.id,
-          name: m.name || m.id,
-          kind,
-          fullModel,
-          routedModel: `${providerAlias}/${m.id}`,
-          alias: modelAliases[fullModel] || null,
-          disabled: disabledList.has(m.id),
-          custom: false,
-          hasActiveConnection: (activeConnectionsByProvider[providerId] || 0) > 0,
-          activeConnections: activeConnectionsByProvider[providerId] || 0,
-          pricing: rate ? {
-            input: rate.input,
-            output: rate.output,
-            cached: rate.cached,
-            source: rate._source || "synced",
-          } : null,
-          caps: {
-            vision: !!c.vision,
-            reasoning: !!c.reasoning,
-            contextWindow: m.contextLength || c.contextWindow || null,
-            maxOutput: m.maxOutputTokens || c.maxOutput || null,
-          },
-        });
-      }
-    }
-
-    // Include custom models of any kind
-    for (const m of customModels || []) {
-      if (!m?.id || !m?.providerAlias) continue;
-      const providerId = ALIAS_TO_ID[m.providerAlias] || m.providerAlias;
-      const kind = m.kind || m.type || "llm";
-      const key = `${providerId}/${m.id}/${kind}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      const fullModel = `${providerId}/${m.id}`;
-      const disabledList = new Set([
-        ...(disabled?.[providerId] || []),
-        ...(disabled?.[m.providerAlias] || []),
-      ]);
-      const c = getCapabilitiesForModel(providerId, m.id);
-      const rate = resolveRate(pricingDetails?.pricing, providerId, m.id);
+      const fullModel = `${providerId}/${id}`;
+      const c = getCapabilitiesForModel(providerId, id);
+      const rate = resolveRate(pricingDetails?.pricing, providerId, id);
 
       models.push({
         provider: providerId,
-        providerName: providerId,
-        providerAlias: m.providerAlias,
-        model: m.id,
-        name: m.name || m.id,
-        kind,
+        providerName,
+        providerAlias,
+        model: id,
+        name: name || id,
+        kind: cleanKind,
+        source,
         fullModel,
-        routedModel: `${m.providerAlias}/${m.id}`,
+        routedModel: `${providerAlias}/${id}`,
         alias: modelAliases[fullModel] || null,
-        disabled: disabledList.has(m.id),
-        custom: true,
+        disabled: disabledList.has(id),
+        custom,
         hasActiveConnection: (activeConnectionsByProvider[providerId] || 0) > 0,
         activeConnections: activeConnectionsByProvider[providerId] || 0,
         pricing: rate ? {
@@ -121,18 +89,81 @@ export async function GET() {
           source: rate._source || "synced",
         } : null,
         caps: {
-          vision: !!c.vision,
-          reasoning: !!c.reasoning,
-          contextWindow: c.contextWindow || null,
-          maxOutput: c.maxOutput || null,
-          ...(m.caps || {}),
+          vision: capsOverride?.vision ?? !!c.vision,
+          reasoning: capsOverride?.reasoning ?? !!c.reasoning,
+          contextWindow: contextLength || capsOverride?.contextWindow || c.contextWindow || null,
+          maxOutput: maxOutputTokens || capsOverride?.maxOutput || c.maxOutput || null,
         },
+      });
+    }
+
+    // 1. Live synced catalog from models.dev (complete Vertex AI, AI Studio & Vertex Partner catalog)
+    for (const [providerId, list] of Object.entries(syncedCatalog || {})) {
+      const meta = providerMeta.get(providerId) || { name: providerId, alias: providerId };
+      for (const m of list || []) {
+        pushModel({
+          providerId,
+          providerAlias: meta.alias,
+          providerName: meta.name,
+          id: m.id,
+          name: m.name || m.id,
+          kind: m.kind || "llm",
+          source: "models.dev",
+          capsOverride: {
+            vision: m.vision,
+            reasoning: m.reasoning,
+            contextWindow: m.contextWindow,
+            maxOutput: m.maxOutput,
+          },
+        });
+      }
+    }
+
+    // 2. Built-in registry models (adds Veo video, Gemini Live STT, and offline fallback before first sync)
+    for (const entry of REGISTRY) {
+      const providerId = entry.id;
+      const meta = providerMeta.get(providerId);
+      for (const m of entry.models || []) {
+        pushModel({
+          providerId,
+          providerAlias: meta.alias,
+          providerName: meta.name,
+          id: m.id,
+          name: m.name || m.id,
+          kind: m.kind || m.type || "llm",
+          source: "registry",
+          contextLength: m.contextLength,
+          maxOutputTokens: m.maxOutputTokens,
+        });
+      }
+    }
+
+    // 3. User custom models
+    for (const m of customModels || []) {
+      if (!m?.id || !m?.providerAlias) continue;
+      const providerId = ALIAS_TO_ID[m.providerAlias] || m.providerAlias;
+      const meta = providerMeta.get(providerId) || { name: providerId, alias: m.providerAlias };
+      pushModel({
+        providerId,
+        providerAlias: m.providerAlias,
+        providerName: meta.name,
+        id: m.id,
+        name: m.name || m.id,
+        kind: m.kind || m.type || "llm",
+        source: "custom",
+        custom: true,
+        capsOverride: m.caps || null,
       });
     }
 
     return NextResponse.json({
       models,
       activeConnectionsByProvider,
+      syncedCounts: {
+        vertex: (syncedCatalog?.vertex || []).length,
+        gemini: (syncedCatalog?.gemini || []).length,
+        "vertex-partner": (syncedCatalog?.["vertex-partner"] || []).length,
+      },
     });
   } catch (error) {
     return NextResponse.json({ error: error.message || "Failed to fetch models" }, { status: 500 });

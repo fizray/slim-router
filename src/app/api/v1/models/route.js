@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS, getModelKind } from "@/shared/constants/models";
 import { ALIAS_TO_ID, getProviderAlias } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases, authenticateApiKey } from "@/lib/db/index.js";
+import { getProviderConnections, getCombos, getCustomModels, getModelAliases, authenticateApiKey, getSyncedCatalog } from "@/lib/db/index.js";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { extractApiKey } from "@/sse/services/auth.js";
 import { getKeyAccessContext, filterModelsListForKey } from "@/sse/services/keyAccess.js";
@@ -34,12 +34,13 @@ export async function OPTIONS() {
 
 export async function buildModelsList(kindFilter = null) {
   const allowedKinds = Array.isArray(kindFilter) && kindFilter.length > 0 ? new Set(kindFilter) : null;
-  const [connections, combos, customModels, aliases, disabledModels] = await Promise.all([
+  const [connections, combos, customModels, aliases, disabledModels, syncedCatalog] = await Promise.all([
     getProviderConnections({ isActive: true }),
     getCombos(),
     getCustomModels(),
     getModelAliases(),
     getDisabledModels(),
+    getSyncedCatalog(),
   ]);
 
   const disabledSet = new Set(
@@ -71,11 +72,13 @@ export async function buildModelsList(kindFilter = null) {
     });
   }
 
-  // 2. Active provider registry models
+  // 2. Active provider models (registry + live synced models.dev catalog)
   for (const providerId of activeProviders) {
     const alias = PROVIDER_ID_TO_ALIAS[providerId] || getProviderAlias(providerId) || providerId;
-    const models = PROVIDER_MODELS[alias] || PROVIDER_MODELS[providerId] || [];
-    for (const m of models) {
+    const registryModels = PROVIDER_MODELS[alias] || PROVIDER_MODELS[providerId] || [];
+    const liveModels = syncedCatalog?.[providerId] || [];
+    const combined = [...liveModels, ...registryModels];
+    for (const m of combined) {
       const id = `${alias}/${m.id}`;
       if (seen.has(id) || disabledSet.has(`${providerId}/${m.id}`) || disabledSet.has(id)) continue;
       const kind = m.kind || m.type || getModelKind(alias, m.id) || "llm";
@@ -89,7 +92,7 @@ export async function buildModelsList(kindFilter = null) {
         created,
         owned_by: providerId,
         kind,
-        ...(m.contextLength ? { context_length: m.contextLength } : {}),
+        ...(m.contextLength || m.contextWindow ? { context_length: m.contextLength || m.contextWindow } : {}),
         ...(caps ? { capabilities: caps } : {}),
         ...(thinkingLevels?.length ? { thinking_levels: thinkingLevels } : {}),
       });

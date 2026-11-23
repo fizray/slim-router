@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Play, RefreshCw, Search, CheckCircle2, XCircle, Loader2, KeyRound,
-  Plus, Copy, Check, Power, Sparkles, ChevronDown, ChevronUp, Trash2,
+  Plus, Copy, Check, Power, Sparkles, ChevronDown, ChevronUp, Trash2, CloudDownload,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { fmtMs } from "@/lib/utils";
@@ -22,6 +22,7 @@ export function ModelsPage() {
   const [kindFilter, setKindFilter] = useState("all");
   const [probeMap, setProbeMap] = useState({});
   const [batchRunning, setBatchRunning] = useState(false);
+  const [syncingCatalog, setSyncingCatalog] = useState(false);
   const [copiedId, setCopiedId] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -193,6 +194,22 @@ export function ModelsPage() {
     load();
   }
 
+  async function handleSyncCatalog() {
+    setSyncingCatalog(true); setErr(""); setMsg("");
+    try {
+      const res = await apiFetch("/api/pricing", { method: "POST" });
+      await load();
+      const c = res?.syncResult?.counts;
+      setMsg(c
+        ? `Catalog synced from models.dev: ${c.vertex} Vertex, ${c.gemini} AI Studio, ${c["vertex-partner"]} Partner models.`
+        : "Catalog synced from models.dev.");
+    } catch (e) {
+      setErr(e.message || "Catalog sync failed");
+    } finally {
+      setSyncingCatalog(false);
+    }
+  }
+
   function copyModelId(id) {
     navigator.clipboard.writeText(id);
     setCopiedId(id);
@@ -213,8 +230,12 @@ export function ModelsPage() {
           <p className="text-xs text-muted-foreground">Browse all Vertex AI &amp; AI Studio models, probe live latency, and test provider or gateway API keys</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleSyncCatalog} disabled={syncingCatalog}>
+            <CloudDownload className={`h-3.5 w-3.5 ${syncingCatalog ? "animate-bounce" : ""}`} />
+            {syncingCatalog ? "Syncing..." : "Sync Catalog"}
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setShowCustomForm((v) => !v)}>
-            <Plus className="h-3.5 w-3.5" /> Custom Model
+            <Plus className="h-3.5 w-3.5" /> Custom
           </Button>
           <Button variant="default" size="sm" onClick={handleBatchProbe} disabled={batchRunning || loading}>
             {batchRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
