@@ -8,6 +8,7 @@ import { CostPricingPage } from "@/pages/CostPricingPage";
 import { CachePage } from "@/pages/CachePage";
 import { TracesPage } from "@/pages/TracesPage";
 import { ReliabilityPage } from "@/pages/ReliabilityPage";
+import { ModelsPage } from "@/pages/ModelsPage";
 import { ProvidersPage } from "@/pages/ProvidersPage";
 import { CombosPage } from "@/pages/CombosPage";
 import { ApiKeysPage } from "@/pages/ApiKeysPage";
@@ -20,6 +21,7 @@ const PAGES = {
   cache: CachePage,
   traces: TracesPage,
   reliability: ReliabilityPage,
+  models: ModelsPage,
   providers: ProvidersPage,
   combos: CombosPage,
   keys: ApiKeysPage,
@@ -59,8 +61,8 @@ export default function App() {
 
   if (!authChecked) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-xs text-muted-foreground">
-        Loading 9Router...
+      <div className="flex min-h-[100dvh] items-center justify-center bg-background text-xs text-muted-foreground">
+        Loading Slim Router...
       </div>
     );
   }
@@ -73,7 +75,7 @@ export default function App() {
 
   return (
     <AppShell activePage={page} onNavigate={navigate} onLogout={handleLogout}>
-      <ActivePage />
+      <ActivePage onNavigate={navigate} />
     </AppShell>
   );
 }

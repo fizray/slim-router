@@ -3,8 +3,6 @@ import { getProviderConnectionById } from "@/lib/db/index.js";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { fetchProviderUpstream } from "open-sse/utils/proxyFetch.js";
 
-export const dynamic = "force-dynamic";
-
 export async function GET(request, { params }) {
   try {
     const { id } = await params;
@@ -14,23 +12,25 @@ export async function GET(request, { params }) {
     const provider = conn.provider;
     const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
 
-    // Try live /models endpoint for OpenAI-compatible or Ollama local connections
-    const baseUrl = conn.providerSpecificData?.baseUrl;
-    if (baseUrl && (provider.startsWith("openai-compatible-") || provider === "ollama-local")) {
+    // Live model discovery for Google AI Studio (gemini)
+    if (provider === "gemini" && conn.apiKey) {
       try {
-        const modelsUrl = `${baseUrl.replace(/\/$/, "")}/models`;
-        const headers = conn.apiKey ? { Authorization: `Bearer ${conn.apiKey}` } : {};
-        const res = await fetchProviderUpstream(modelsUrl, { headers, signal: AbortSignal.timeout(8000) });
+        const res = await fetchProviderUpstream("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100", {
+          headers: { "x-goog-api-key": conn.apiKey },
+          signal: AbortSignal.timeout(10000),
+        });
         if (res.ok) {
           const json = await res.json();
-          const data = Array.isArray(json?.data) ? json.data : (Array.isArray(json?.models) ? json.models : []);
-          const models = data
-            .map((m) => ({ id: m.id || m.name, name: m.name || m.id }))
-            .filter((m) => m.id);
+          const models = (json?.models || []).map((m) => ({
+            id: String(m.name || "").replace(/^models\//, ""),
+            name: m.displayName || m.name,
+            kind: (m.supportedGenerationMethods || []).includes("embedContent") ? "embedding" : "llm",
+            contextLength: m.inputTokenLimit,
+          })).filter((m) => m.id);
           if (models.length > 0) return NextResponse.json({ models, source: "live" });
         }
       } catch {
-        // fall through to static list
+        // fall through to registry list
       }
     }
 

@@ -12,6 +12,7 @@ package-lock.json
 # Local environment & runtime data
 .env*
 !.env.example
+docker-compose.override.yml
 data/
 logs/
 *.sqlite

@@ -23,6 +23,7 @@ const EXACT_ROUTES = new Map([
   ["/api/keys", () => import("@/app/api/keys/route.js")],
   ["/api/combos", () => import("@/app/api/combos/route.js")],
   ["/api/models", () => import("@/app/api/models/route.js")],
+  ["/api/models/probe", () => import("@/app/api/models/probe/route.js")],
   ["/api/models/alias", () => import("@/app/api/models/alias/route.js")],
   ["/api/models/custom", () => import("@/app/api/models/custom/route.js")],
   ["/api/models/disabled", () => import("@/app/api/models/disabled/route.js")],

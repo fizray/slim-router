@@ -1,6 +1,5 @@
 /**
- * Zero-dependency responsive interactive SVG charts + KPI primitives (shadcn style).
- * Replaces ~38 MB of Recharts + es-toolkit + Redux with clean native SVG.
+ * Zero-dependency responsive interactive SVG charts + KPI primitives (mobile & desktop friendly).
  */
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -18,25 +17,27 @@ const RANGES = [
 
 export function RangeSelector({ value, onChange }) {
   return (
-    <TabsList>
-      {RANGES.map((r) => (
-        <TabsTrigger key={r.id} active={value === r.id} onClick={() => onChange(r.id)}>
-          {r.label}
-        </TabsTrigger>
-      ))}
-    </TabsList>
+    <div className="max-w-full overflow-x-auto pb-0.5">
+      <TabsList className="h-9 sm:h-8">
+        {RANGES.map((r) => (
+          <TabsTrigger key={r.id} active={value === r.id} onClick={() => onChange(r.id)} className="px-2.5 sm:px-2.5">
+            {r.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </div>
   );
 }
 
 export function KpiCard({ title, value, sub, icon: Icon, accent }) {
   return (
     <Card>
-      <CardContent className="p-4">
+      <CardContent className="p-3.5 sm:p-4">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</span>
-          {Icon && <Icon className={cn("h-3.5 w-3.5 text-muted-foreground", accent)} />}
+          <span className="text-[10px] sm:text-[11px] font-medium uppercase tracking-wider text-muted-foreground truncate">{title}</span>
+          {Icon && <Icon className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground", accent)} />}
         </div>
-        <div className={cn("mt-2 text-2xl font-bold tracking-tight tabular-nums", accent)}>{value}</div>
+        <div className={cn("mt-1.5 text-xl sm:text-2xl font-bold tracking-tight tabular-nums", accent)}>{value}</div>
         {sub && <div className="mt-1 text-[11px] text-muted-foreground truncate">{sub}</div>}
       </CardContent>
     </Card>
@@ -72,12 +73,11 @@ export function SvgLineAreaChart({
 
   const xAt = (i) => (data.length <= 1 ? pad.left + plotW / 2 : pad.left + (i / (data.length - 1)) * plotW);
   const yAt = (v) => pad.top + plotH - (Math.max(0, Number(v || 0)) / maxVal) * plotH;
-
   const hoverRow = hoverIdx !== null && data[hoverIdx] ? data[hoverIdx] : null;
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between gap-2">
+      <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
           <CardTitle>{title}</CardTitle>
           {description && <CardDescription className="mt-0.5">{description}</CardDescription>}
@@ -93,7 +93,7 @@ export function SvgLineAreaChart({
       </CardHeader>
       <CardContent>
         {data.length === 0 ? (
-          <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">
+          <div className="flex h-40 items-center justify-center text-xs text-muted-foreground">
             No telemetry data in this time window yet.
           </div>
         ) : (
@@ -163,10 +163,11 @@ export function SvgLineAreaChart({
                     <rect
                       x={xAt(i) - sliceW / 2}
                       y={pad.top}
-                      width={Math.max(8, sliceW)}
+                      width={Math.max(12, sliceW)}
                       height={plotH}
                       fill="transparent"
                       onMouseEnter={() => setHoverIdx(i)}
+                      onClick={() => setHoverIdx((cur) => (cur === i ? null : i))}
                     />
                   </g>
                 );
@@ -208,7 +209,7 @@ export function SvgBarChart({
       </CardHeader>
       <CardContent>
         {data.length === 0 ? (
-          <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">
+          <div className="flex h-40 items-center justify-center text-xs text-muted-foreground">
             No data available.
           </div>
         ) : (
@@ -237,12 +238,16 @@ export function SvgBarChart({
                 const x = pad.left + i * slotW + (slotW - barW) / 2;
                 const y = pad.top + plotH - bh;
                 return (
-                  <g key={i} onMouseEnter={() => setHoverIdx(i)}>
+                  <g
+                    key={i}
+                    onMouseEnter={() => setHoverIdx(i)}
+                    onClick={() => setHoverIdx((cur) => (cur === i ? null : i))}
+                  >
                     <rect
                       x={x}
                       y={y}
                       width={barW}
-                      height={Math.max(1, bh)}
+                      height={Math.max(2, bh)}
                       rx="3"
                       fill={color}
                       fillOpacity={hoverIdx === i ? 1 : 0.8}

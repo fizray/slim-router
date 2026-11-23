@@ -10,7 +10,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 export function ApiKeysPage() {
   const [keys, setKeys] = useState([]);
   const [createdKey, setCreatedKey] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [copiedId, setCopiedId] = useState("");
   const [err, setErr] = useState("");
   const [form, setForm] = useState({
     name: "",
@@ -57,16 +57,21 @@ export function ApiKeysPage() {
     load();
   }
 
-  function copyKey() {
-    navigator.clipboard.writeText(createdKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+  function copyVal(id, text) {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(""), 1600);
   }
 
   const origin = window.location.origin;
+  const endpoints = [
+    { id: "oai", label: "OpenAI-Compatible", url: `${origin}/v1` },
+    { id: "ant", label: "Anthropic / Claude SDK", url: `${origin}/v1/messages` },
+    { id: "gem", label: "Native Gemini SDK", url: `${origin}/v1beta` },
+  ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div>
         <h2 className="text-lg font-semibold tracking-tight">API Keys &amp; Governance Policies</h2>
         <p className="text-xs text-muted-foreground">Zero-plaintext HMAC-SHA256 keys (sk-9r_...) with RPM/TPM rate limits, USD budget caps, and model allow-lists</p>
@@ -76,14 +81,14 @@ export function ApiKeysPage() {
 
       {createdKey && (
         <Card className="border-emerald-500/40 bg-emerald-500/5">
-          <CardContent className="p-4 flex flex-wrap items-center justify-between gap-3">
+          <CardContent className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1 min-w-0">
               <div className="text-xs font-semibold text-emerald-500">Copy your new API key now — it will never be shown again!</div>
-              <code className="block truncate font-mono text-xs">{createdKey}</code>
+              <code className="block break-all font-mono text-xs">{createdKey}</code>
             </div>
-            <Button variant="outline" size="sm" onClick={copyKey}>
-              {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
-              {copied ? "Copied" : "Copy"}
+            <Button variant="outline" size="sm" onClick={() => copyVal("new-key", createdKey)} className="shrink-0">
+              {copiedId === "new-key" ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+              {copiedId === "new-key" ? "Copied" : "Copy"}
             </Button>
           </CardContent>
         </Card>
@@ -95,7 +100,7 @@ export function ApiKeysPage() {
           <CardDescription>All inference endpoints require a valid Bearer token or x-goog-api-key header (zero localhost bypass).</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleCreate} className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <form onSubmit={handleCreate} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-1.5">
               <Label>Key Name</Label>
               <Input placeholder="e.g. Claude Code / Cursor / Personal App" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
@@ -120,14 +125,46 @@ export function ApiKeysPage() {
               <Label>Allowed Models (comma-separated)</Label>
               <Input placeholder="Leave blank for all" value={form.allowModels} onChange={(e) => setForm((f) => ({ ...f, allowModels: e.target.value }))} />
             </div>
-            <div className="md:col-span-3">
-              <Button type="submit"><Plus className="h-3.5 w-3.5" /> Generate API Key</Button>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Button type="submit" className="w-full sm:w-auto"><Plus className="h-3.5 w-3.5" /> Generate API Key</Button>
             </div>
           </form>
         </CardContent>
       </Card>
 
-      <Card>
+      {/* Mobile card list (< md) */}
+      <div className="space-y-2.5 md:hidden">
+        {keys.length === 0 ? (
+          <Card><CardContent className="py-8 text-center text-xs text-muted-foreground">No API keys created yet.</CardContent></Card>
+        ) : (
+          keys.map((k) => (
+            <Card key={k.id}>
+              <CardContent className="p-3.5 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-xs">{k.name}</div>
+                    <div className="font-mono text-[11px] text-muted-foreground">{k.keyHint}</div>
+                  </div>
+                  <Button variant="ghost" size="icon" className="text-destructive" onClick={() => handleDelete(k.id)}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-muted-foreground">
+                  <span>RPM: {k.rpmLimit || "∞"}</span>
+                  <span>· TPM: {k.tpmLimit || "∞"}</span>
+                  <span>· Cap: {k.dailyBudgetUsd ? `$${k.dailyBudgetUsd}/d` : "∞"}</span>
+                  <Badge variant={k.access?.restricted ? "warning" : "secondary"}>
+                    {k.access?.restricted ? `${k.access.allow?.length || 0} models` : "All models"}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        )}
+      </div>
+
+      {/* Desktop table (>= md) */}
+      <Card className="hidden md:block">
         <CardHeader><CardTitle>Active Keys ({keys.length})</CardTitle></CardHeader>
         <CardContent className="p-0">
           <Table>
@@ -172,21 +209,23 @@ export function ApiKeysPage() {
       <Card>
         <CardHeader>
           <CardTitle>Gateway Endpoints</CardTitle>
-          <CardDescription>Point any OpenAI, Anthropic, or Google Gemini SDK to these base URLs.</CardDescription>
+          <CardDescription>Tap to copy base URL for OpenAI, Anthropic, or Google Gemini SDKs.</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-2 font-mono text-xs md:grid-cols-3">
-          <div className="rounded-md border bg-muted/30 p-3">
-            <div className="text-[10px] text-muted-foreground mb-1">OpenAI-Compatible</div>
-            <div className="truncate">{origin}/v1</div>
-          </div>
-          <div className="rounded-md border bg-muted/30 p-3">
-            <div className="text-[10px] text-muted-foreground mb-1">Anthropic / Claude SDK</div>
-            <div className="truncate">{origin}/v1/messages</div>
-          </div>
-          <div className="rounded-md border bg-muted/30 p-3">
-            <div className="text-[10px] text-muted-foreground mb-1">Native Gemini SDK</div>
-            <div className="truncate">{origin}/v1beta</div>
-          </div>
+          {endpoints.map((ep) => (
+            <button
+              key={ep.id}
+              type="button"
+              onClick={() => copyVal(ep.id, ep.url)}
+              className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-3 text-left hover:bg-muted/60 transition-colors cursor-pointer"
+            >
+              <div className="min-w-0">
+                <div className="text-[10px] text-muted-foreground mb-0.5 font-sans">{ep.label}</div>
+                <div className="truncate">{ep.url}</div>
+              </div>
+              {copiedId === ep.id ? <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+            </button>
+          ))}
         </CardContent>
       </Card>
     </div>

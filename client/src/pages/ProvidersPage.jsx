@@ -89,7 +89,7 @@ export function ProvidersPage() {
   const meta = GOOGLE_PROVIDERS.find((p) => p.id === form.provider);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div>
         <h2 className="text-lg font-semibold tracking-tight">Vertex AI &amp; Google AI Studio Connections</h2>
         <p className="text-xs text-muted-foreground">Credentials are encrypted at rest with AES-256-GCM + AAD in config.sqlite and masked in all API responses</p>
@@ -139,13 +139,53 @@ export function ProvidersPage() {
               </>
             )}
             <div className="md:col-span-2">
-              <Button type="submit"><Plus className="h-3.5 w-3.5" /> Encrypt &amp; Save Connection</Button>
+              <Button type="submit" className="w-full sm:w-auto"><Plus className="h-3.5 w-3.5" /> Encrypt &amp; Save Connection</Button>
             </div>
           </form>
         </CardContent>
       </Card>
 
-      <Card>
+      {/* Mobile card list (< md) */}
+      <div className="space-y-2.5 md:hidden">
+        {loading && connections.length === 0 ? (
+          <Card><CardContent className="py-8 text-center text-xs text-muted-foreground">Loading...</CardContent></Card>
+        ) : connections.length === 0 ? (
+          <Card><CardContent className="py-8 text-center text-xs text-muted-foreground">No connections configured yet.</CardContent></Card>
+        ) : (
+          connections.map((c) => (
+            <Card key={c.id}>
+              <CardContent className="p-3.5 space-y-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <Badge variant="secondary">{c.provider}</Badge>
+                      <Badge variant={c.isActive && c.testStatus !== "error" ? "success" : "warning"}>
+                        {c.isActive ? (c.testStatus || "active") : "disabled"}
+                      </Badge>
+                    </div>
+                    <div className="mt-1 font-medium text-xs">{c.name}</div>
+                    <div className="font-mono text-[11px] text-muted-foreground truncate">{c.apiKeyMasked || (c.hasSecret ? "encrypted" : "—")}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" className="flex-1" onClick={() => handleTest(c.id)}>
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Test
+                  </Button>
+                  <Button variant="outline" size="sm" className="flex-1" onClick={() => handleToggle(c)}>
+                    <Power className="h-3.5 w-3.5" /> {c.isActive ? "Disable" : "Enable"}
+                  </Button>
+                  <Button variant="ghost" size="icon" className="text-destructive" onClick={() => handleDelete(c.id)}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        )}
+      </div>
+
+      {/* Desktop table (>= md) */}
+      <Card className="hidden md:block">
         <CardHeader><CardTitle>Configured Connections ({connections.length})</CardTitle></CardHeader>
         <CardContent className="p-0">
           <Table>

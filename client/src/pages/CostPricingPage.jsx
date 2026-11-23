@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { DollarSign, TrendingUp, RefreshCw, CloudDownload, Save, RotateCcw, Plus } from "lucide-react";
+import { DollarSign, TrendingUp, RefreshCw, Settings, Search } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { fmtNum, fmtUsd } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -9,83 +9,29 @@ import { Input, NativeSelect } from "@/components/ui/input";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { KpiCard, RangeSelector, SvgBarChart } from "@/components/charts";
 
-export function CostPricingPage() {
+export function CostPricingPage({ onNavigate }) {
   const [range, setRange] = useState("30d");
   const [costData, setCostData] = useState(null);
   const [pricingData, setPricingData] = useState(null);
-  const [syncing, setSyncing] = useState(false);
   const [filter, setFilter] = useState("");
-  const [msg, setMsg] = useState("");
-  const [err, setErr] = useState("");
-  const [customForm, setCustomForm] = useState({
-    provider: "vertex",
-    model: "",
-    input: "",
-    output: "",
-    cached: "",
-    cache_creation: "",
-  });
+  const [providerFilter, setProviderFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [c, p] = await Promise.all([
-      apiFetch(`/api/analytics/cost?range=${range}`),
-      apiFetch("/api/pricing"),
-    ]);
-    setCostData(c);
-    setPricingData(p);
+    setLoading(true);
+    try {
+      const [c, p] = await Promise.all([
+        apiFetch(`/api/analytics/cost?range=${range}`),
+        apiFetch("/api/pricing"),
+      ]);
+      setCostData(c);
+      setPricingData(p);
+    } finally {
+      setLoading(false);
+    }
   }, [range]);
 
   useEffect(() => { load().catch(() => {}); }, [load]);
-
-  async function handleSyncNow() {
-    setSyncing(true); setMsg(""); setErr("");
-    try {
-      const res = await apiFetch("/api/pricing", { method: "POST" });
-      setPricingData(res);
-      const total = res?.syncResult?.totalModels ?? 0;
-      setMsg(`Synced live pricing from models.dev (${total} Vertex/Gemini models updated).`);
-    } catch (e) {
-      setErr(e.message || "Failed to sync live pricing");
-    } finally {
-      setSyncing(false);
-    }
-  }
-
-  async function handleSaveOverride(e) {
-    e.preventDefault();
-    setMsg(""); setErr("");
-    if (!customForm.model.trim()) return setErr("Model ID is required");
-    const rate = {
-      input: Number(customForm.input || 0),
-      output: Number(customForm.output || 0),
-      cached: Number(customForm.cached || customForm.input || 0),
-      cache_creation: Number(customForm.cache_creation || customForm.input || 0),
-    };
-    try {
-      const res = await apiFetch("/api/pricing", {
-        method: "PATCH",
-        body: { [customForm.provider]: { [customForm.model.trim()]: rate } },
-      });
-      setPricingData(res);
-      setCustomForm((f) => ({ ...f, model: "", input: "", output: "", cached: "", cache_creation: "" }));
-      setMsg(`Saved manual pricing override for ${customForm.provider}/${customForm.model.trim()}.`);
-    } catch (e2) {
-      setErr(e2.message);
-    }
-  }
-
-  async function handleResetOverride(provider, model) {
-    setMsg(""); setErr("");
-    try {
-      const res = await apiFetch(`/api/pricing?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`, {
-        method: "DELETE",
-      });
-      setPricingData(res);
-      setMsg(`Reset override for ${provider}/${model} back to live synced rate.`);
-    } catch (e) {
-      setErr(e.message);
-    }
-  }
 
   const s = costData?.summary || {};
   const byModel = costData?.byModel || [];
@@ -93,6 +39,7 @@ export function CostPricingPage() {
 
   const pricingRows = [];
   for (const [provider, models] of Object.entries(pricingData?.pricing || {})) {
+    if (providerFilter !== "all" && provider !== providerFilter) continue;
     for (const [model, rate] of Object.entries(models || {})) {
       if (filter && !`${provider}/${model}`.toLowerCase().includes(filter.toLowerCase())) continue;
       pricingRows.push({ provider, model, ...rate });
@@ -103,59 +50,51 @@ export function CostPricingPage() {
   const lastSync = pricingData?.meta?.syncedAt || pricingData?.syncState?.lastSync;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold tracking-tight">Cost Attribution &amp; Dynamic Live Pricing</h2>
-          <p className="text-xs text-muted-foreground">Zero hardcoded prices — synced dynamically from models.dev/api.json with per-model DB overrides</p>
+          <h2 className="text-lg font-semibold tracking-tight">Cost Attribution &amp; Live Rates</h2>
+          <p className="text-xs text-muted-foreground">Read-only spend analytics and active $/1M token rates synced from models.dev</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <RangeSelector value={range} onChange={setRange} />
-          <Button variant="default" size="sm" onClick={handleSyncNow} disabled={syncing}>
-            <CloudDownload className={`h-3.5 w-3.5 ${syncing ? "animate-bounce" : ""}`} />
-            {syncing ? "Syncing..." : "Sync Live Pricing"}
+          <Button variant="outline" size="icon" onClick={load} disabled={loading}>
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
           </Button>
         </div>
       </div>
-
-      {msg && <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-500">{msg}</div>}
-      {err && <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{err}</div>}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard title="Period Spend" value={fmtUsd(s.totalCostUsd)} sub={`${fmtNum(s.totalRequests)} requests`} icon={DollarSign} accent="text-emerald-500" />
         <KpiCard title="Cost Without Cache" value={fmtUsd(s.costWithoutCacheUsd)} sub={`Net saved: ${fmtUsd(s.netCacheSavingsUsd)}`} icon={TrendingUp} />
         <KpiCard title="Avg Cost / Request" value={fmtUsd(s.avgCostPerRequestUsd, 5)} sub="Effective blended cost" icon={DollarSign} />
-        <KpiCard title="Live Pricing Models" value={fmtNum(pricingRows.length)} sub={lastSync ? `Synced ${new Date(lastSync).toLocaleString()}` : "Not synced yet — click Sync"} icon={RefreshCw} />
+        <KpiCard title="Active Rate Models" value={fmtNum(pricingRows.length)} sub={lastSync ? `Synced ${new Date(lastSync).toLocaleDateString()}` : "Sync in Settings"} icon={RefreshCw} />
       </div>
 
       <SvgBarChart title="Daily Spend (USD)" data={daily} xKey="label" valueKey="value" color="#10b981" formatY={(v) => fmtUsd(v, 3)} />
 
       <Card>
-        <CardHeader>
-          <CardTitle>Spend Breakdown by Model</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Spend Breakdown by Model</CardTitle></CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Provider / Model</TableHead>
-                <TableHead className="text-right">Input Cost</TableHead>
+                <TableHead className="text-right">Input</TableHead>
                 <TableHead className="text-right">Cache Read</TableHead>
-                <TableHead className="text-right">Cache Write</TableHead>
-                <TableHead className="text-right">Output Cost</TableHead>
+                <TableHead className="text-right">Output</TableHead>
                 <TableHead className="text-right">Total</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {byModel.length === 0 ? (
-                <TableRow><TableCell colSpan={6} className="py-6 text-center text-muted-foreground">No spend recorded yet.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={5} className="py-6 text-center text-muted-foreground">No spend recorded yet.</TableCell></TableRow>
               ) : (
                 byModel.map((m) => (
                   <TableRow key={`${m.provider}/${m.model}`}>
                     <TableCell className="font-mono"><Badge variant="secondary" className="mr-2">{m.provider}</Badge>{m.model}</TableCell>
                     <TableCell className="text-right font-mono">{fmtUsd(m.costInputUsd)}</TableCell>
                     <TableCell className="text-right font-mono text-sky-500">{fmtUsd(m.costCacheReadUsd)}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtUsd(m.costCacheWriteUsd)}</TableCell>
                     <TableCell className="text-right font-mono">{fmtUsd(m.costOutputUsd)}</TableCell>
                     <TableCell className="text-right font-mono font-semibold">{fmtUsd(m.costTotalUsd)}</TableCell>
                   </TableRow>
@@ -166,98 +105,102 @@ export function CostPricingPage() {
         </CardContent>
       </Card>
 
+      {/* Strictly Read-Only Live Rate Reference */}
       <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <CardTitle>Live Rate Table ($ / 1M tokens)</CardTitle>
-              <CardDescription>Auto-synced from models.dev into config.sqlite; add manual overrides below for custom or preview models.</CardDescription>
-            </div>
-            <Input
-              className="w-56"
-              placeholder="Filter model..."
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle>Active Rate Table (Read-Only · $/1M tokens)</CardTitle>
+            <CardDescription className="mt-0.5">
+              {lastSync ? `Last synced from models.dev: ${new Date(lastSync).toLocaleString()}` : "Rates not synced yet — trigger sync in Settings."}
+            </CardDescription>
           </div>
+          {onNavigate && (
+            <Button variant="outline" size="sm" onClick={() => onNavigate("settings")}>
+              <Settings className="h-3.5 w-3.5" /> Edit Rates in Settings
+            </Button>
+          )}
         </CardHeader>
-        <CardContent className="space-y-4">
-          <form onSubmit={handleSaveOverride} className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/30 p-3 md:grid-cols-7">
-            <NativeSelect value={customForm.provider} onChange={(e) => setCustomForm((f) => ({ ...f, provider: e.target.value }))}>
+        <CardContent className="space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-3 sm:top-2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                className="pl-8"
+                placeholder="Filter model rate..."
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+            </div>
+            <NativeSelect className="sm:w-40" value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
+              <option value="all">All Providers</option>
               <option value="vertex">vertex</option>
               <option value="gemini">gemini</option>
               <option value="vertex-partner">vertex-partner</option>
             </NativeSelect>
-            <Input placeholder="model id (e.g. gemini-2.5-pro)" value={customForm.model} onChange={(e) => setCustomForm((f) => ({ ...f, model: e.target.value }))} />
-            <Input type="number" step="any" placeholder="Input $/1M" value={customForm.input} onChange={(e) => setCustomForm((f) => ({ ...f, input: e.target.value }))} />
-            <Input type="number" step="any" placeholder="Output $/1M" value={customForm.output} onChange={(e) => setCustomForm((f) => ({ ...f, output: e.target.value }))} />
-            <Input type="number" step="any" placeholder="Cache Read $/1M" value={customForm.cached} onChange={(e) => setCustomForm((f) => ({ ...f, cached: e.target.value }))} />
-            <Input type="number" step="any" placeholder="Cache Write $/1M" value={customForm.cache_creation} onChange={(e) => setCustomForm((f) => ({ ...f, cache_creation: e.target.value }))} />
-            <Button type="submit" size="default">
-              <Plus className="h-3.5 w-3.5" />
-              Save Override
-            </Button>
-          </form>
+          </div>
 
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Provider / Model</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead className="text-right">Input</TableHead>
-                <TableHead className="text-right">Cached Read</TableHead>
-                <TableHead className="text-right">Cache Write</TableHead>
-                <TableHead className="text-right">Output</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pricingRows.length === 0 ? (
+          {/* Mobile cards (< md) */}
+          <div className="space-y-2 md:hidden">
+            {pricingRows.length === 0 ? (
+              <div className="py-6 text-center text-xs text-muted-foreground">No pricing rates loaded yet. Sync live rates in Settings.</div>
+            ) : (
+              pricingRows.slice(0, 60).map((r) => (
+                <div key={`${r.provider}/${r.model}`} className="rounded-lg border p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 font-mono text-xs font-medium truncate">
+                      <Badge variant="secondary" className="mr-1.5">{r.provider}</Badge>
+                      {r.model}
+                    </div>
+                    <Badge variant={r._source === "override" ? "warning" : "info"}>
+                      {r._source === "override" ? "Override" : "Live"}
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 text-[11px] font-mono text-muted-foreground">
+                    <div>In: <span className="text-foreground">${Number(r.input || 0).toFixed(4)}</span></div>
+                    <div>Out: <span className="text-foreground">${Number(r.output || 0).toFixed(4)}</span></div>
+                    <div>Cache R: <span className="text-sky-500">${Number(r.cached ?? r.input ?? 0).toFixed(4)}</span></div>
+                    <div>Cache W: <span className="text-foreground">${Number(r.cache_creation ?? r.input ?? 0).toFixed(4)}</span></div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop table (>= md) */}
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    No pricing rates loaded yet. Click <strong>Sync Live Pricing</strong> above to pull official rates from models.dev.
-                  </TableCell>
+                  <TableHead>Provider / Model</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead className="text-right">Input</TableHead>
+                  <TableHead className="text-right">Cached Read</TableHead>
+                  <TableHead className="text-right">Cache Write</TableHead>
+                  <TableHead className="text-right">Output</TableHead>
                 </TableRow>
-              ) : (
-                pricingRows.slice(0, 80).map((r) => (
-                  <TableRow key={`${r.provider}/${r.model}`}>
-                    <TableCell className="font-mono"><Badge variant="secondary" className="mr-2">{r.provider}</Badge>{r.model}</TableCell>
-                    <TableCell>
-                      <Badge variant={r._source === "override" ? "warning" : "info"}>
-                        {r._source === "override" ? "Manual Override" : "models.dev Live"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right font-mono">${Number(r.input || 0).toFixed(4)}</TableCell>
-                    <TableCell className="text-right font-mono text-sky-500">${Number(r.cached ?? r.input ?? 0).toFixed(4)}</TableCell>
-                    <TableCell className="text-right font-mono">${Number(r.cache_creation ?? r.input ?? 0).toFixed(4)}</TableCell>
-                    <TableCell className="text-right font-mono">${Number(r.output || 0).toFixed(4)}</TableCell>
-                    <TableCell className="text-right">
-                      {r._source === "override" ? (
-                        <Button variant="ghost" size="sm" onClick={() => handleResetOverride(r.provider, r.model)}>
-                          <RotateCcw className="h-3 w-3" /> Reset
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setCustomForm({
-                            provider: r.provider,
-                            model: r.model,
-                            input: String(r.input ?? ""),
-                            output: String(r.output ?? ""),
-                            cached: String(r.cached ?? ""),
-                            cache_creation: String(r.cache_creation ?? ""),
-                          })}
-                        >
-                          <Save className="h-3 w-3" /> Override
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {pricingRows.length === 0 ? (
+                  <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No pricing rates loaded yet. Sync live rates in Settings.</TableCell></TableRow>
+                ) : (
+                  pricingRows.slice(0, 100).map((r) => (
+                    <TableRow key={`${r.provider}/${r.model}`}>
+                      <TableCell className="font-mono"><Badge variant="secondary" className="mr-2">{r.provider}</Badge>{r.model}</TableCell>
+                      <TableCell>
+                        <Badge variant={r._source === "override" ? "warning" : "info"}>
+                          {r._source === "override" ? "Manual Override" : "models.dev Live"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">${Number(r.input || 0).toFixed(4)}</TableCell>
+                      <TableCell className="text-right font-mono text-sky-500">${Number(r.cached ?? r.input ?? 0).toFixed(4)}</TableCell>
+                      <TableCell className="text-right font-mono">${Number(r.cache_creation ?? r.input ?? 0).toFixed(4)}</TableCell>
+                      <TableCell className="text-right font-mono">${Number(r.output || 0).toFixed(4)}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>

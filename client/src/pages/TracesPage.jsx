@@ -8,6 +8,69 @@ import { Badge } from "@/components/ui/badge";
 import { Input, NativeSelect } from "@/components/ui/input";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 
+function TraceDetailContent({ selected, detailLoading }) {
+  if (detailLoading) {
+    return <div className="py-8 text-center text-xs text-muted-foreground">Loading trace detail...</div>;
+  }
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Span Waterfall</div>
+        <div className="space-y-1.5">
+          {(selected.spans || []).map((sp, i) => {
+            const totalMs = Math.max(1, selected.trace?.total_ms || 1);
+            const leftPct = Math.min(95, ((sp.started_at_ms || 0) / totalMs) * 100);
+            const widthPct = Math.max(3, Math.min(100 - leftPct, ((sp.duration_ms || 1) / totalMs) * 100));
+            return (
+              <div key={i} className="rounded-md border p-2 text-[11px]">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-mono font-medium truncate">{sp.span_type} {sp.provider ? `(${sp.provider})` : ""}</span>
+                  <span className="font-mono text-muted-foreground shrink-0">{fmtMs(sp.duration_ms)} · {sp.http_status || sp.status}</span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden relative">
+                  <div
+                    className={`absolute top-0 bottom-0 rounded-full ${sp.status === "error" ? "bg-red-500" : "bg-sky-500"}`}
+                    style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {selected.payload?.mediaManifest?.length > 0 && (
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Multimodal Media Manifest</div>
+          <div className="space-y-1">
+            {selected.payload.mediaManifest.map((m, i) => (
+              <div key={i} className="flex items-center justify-between rounded-md border px-2.5 py-1.5 text-[11px] font-mono">
+                <span className="inline-flex items-center gap-1.5">
+                  <FileImage className="h-3.5 w-3.5 text-sky-500" />
+                  {m.mimeType}
+                </span>
+                <span className="text-muted-foreground">{fmtBytes(m.bytes)} · {String(m.sha256 || "").slice(0, 10)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selected.payload && (
+        <div className="space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sanitized Payload (Gzip BLOB)</div>
+          <pre className="max-h-72 overflow-auto rounded-md border bg-muted/50 p-2.5 text-[10px] font-mono">
+            {JSON.stringify({
+              clientRequest: selected.payload.clientRequest,
+              clientResponse: selected.payload.clientResponse,
+            }, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TracesPage() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
@@ -43,11 +106,11 @@ export function TracesPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Request Trace Explorer</h2>
-          <p className="text-xs text-muted-foreground">Forever-retained traces ({fmtNum(total)} total) with span waterfalls, media manifests, and redacted payloads</p>
+          <p className="text-xs text-muted-foreground">Forever-retained traces ({fmtNum(total)} total) with span waterfalls &amp; redacted payloads</p>
         </div>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
@@ -55,9 +118,9 @@ export function TracesPage() {
       </div>
 
       <Card>
-        <CardContent className="p-3 flex flex-wrap items-center gap-2">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+        <CardContent className="p-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-3 sm:top-2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               className="pl-8"
               placeholder="Search trace ID, model, endpoint..."
@@ -65,21 +128,49 @@ export function TracesPage() {
               onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
             />
           </div>
-          <NativeSelect className="w-36" value={filters.provider} onChange={(e) => setFilters((f) => ({ ...f, provider: e.target.value }))}>
-            <option value="">All Providers</option>
-            <option value="vertex">vertex</option>
-            <option value="gemini">gemini</option>
-            <option value="vertex-partner">vertex-partner</option>
-          </NativeSelect>
-          <NativeSelect className="w-32" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
-            <option value="">All Status</option>
-            <option value="success">Success</option>
-            <option value="error">Error</option>
-          </NativeSelect>
+          <div className="grid grid-cols-2 gap-2 sm:flex">
+            <NativeSelect className="sm:w-36" value={filters.provider} onChange={(e) => setFilters((f) => ({ ...f, provider: e.target.value }))}>
+              <option value="">All Providers</option>
+              <option value="vertex">vertex</option>
+              <option value="gemini">gemini</option>
+              <option value="vertex-partner">vertex-partner</option>
+            </NativeSelect>
+            <NativeSelect className="sm:w-32" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
+              <option value="">All Status</option>
+              <option value="success">Success</option>
+              <option value="error">Error</option>
+            </NativeSelect>
+          </div>
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      {/* Mobile card list (< md) */}
+      <div className="space-y-2 md:hidden">
+        {items.length === 0 ? (
+          <Card><CardContent className="py-10 text-center text-xs text-muted-foreground">No traces match your filter.</CardContent></Card>
+        ) : (
+          items.map((t) => (
+            <Card key={t.trace_id} className="cursor-pointer active:scale-[0.99] transition-transform" onClick={() => openTrace(t.trace_id)}>
+              <CardContent className="p-3.5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Badge variant={t.status === "success" ? "success" : "destructive"}>{t.http_status || t.status}</Badge>
+                    <span className="font-mono text-xs font-medium truncate">{t.final_provider}/{t.final_model || t.requested_model}</span>
+                  </div>
+                  <span className="font-mono text-[11px] text-muted-foreground shrink-0">{new Date(t.epoch_ms).toLocaleTimeString()}</span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
+                  <span className="truncate">{t.endpoint}</span>
+                  <span className="shrink-0 ml-2">{fmtMs(t.total_ms)} · {fmtUsd(t.cost_total)}</span>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        )}
+      </div>
+
+      {/* Desktop split view (>= md) */}
+      <div className="hidden md:grid grid-cols-1 gap-4 xl:grid-cols-12">
         <Card className={selected ? "xl:col-span-7" : "xl:col-span-12"}>
           <CardContent className="p-0">
             <Table>
@@ -129,7 +220,7 @@ export function TracesPage() {
         </Card>
 
         {selected && (
-          <Card className="xl:col-span-5">
+          <Card className="hidden xl:block xl:col-span-5">
             <CardHeader className="flex flex-row items-start justify-between gap-2">
               <div className="min-w-0">
                 <CardTitle className="font-mono text-xs truncate">{selected.trace?.trace_id}</CardTitle>
@@ -141,70 +232,32 @@ export function TracesPage() {
                 <X className="h-4 w-4" />
               </Button>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {detailLoading ? (
-                <div className="py-8 text-center text-xs text-muted-foreground">Loading trace detail...</div>
-              ) : (
-                <>
-                  <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Span Waterfall</div>
-                    <div className="space-y-1.5">
-                      {(selected.spans || []).map((sp, i) => {
-                        const totalMs = Math.max(1, selected.trace?.total_ms || 1);
-                        const leftPct = Math.min(95, ((sp.started_at_ms || 0) / totalMs) * 100);
-                        const widthPct = Math.max(3, Math.min(100 - leftPct, ((sp.duration_ms || 1) / totalMs) * 100));
-                        return (
-                          <div key={i} className="rounded-md border p-2 text-[11px]">
-                            <div className="flex items-center justify-between gap-2 mb-1">
-                              <span className="font-mono font-medium">{sp.span_type} {sp.provider ? `(${sp.provider})` : ""}</span>
-                              <span className="font-mono text-muted-foreground">{fmtMs(sp.duration_ms)} · {sp.http_status || sp.status}</span>
-                            </div>
-                            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden relative">
-                              <div
-                                className={`absolute top-0 bottom-0 rounded-full ${sp.status === "error" ? "bg-red-500" : "bg-sky-500"}`}
-                                style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {selected.payload?.mediaManifest?.length > 0 && (
-                    <div>
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Multimodal Media Manifest</div>
-                      <div className="space-y-1">
-                        {selected.payload.mediaManifest.map((m, i) => (
-                          <div key={i} className="flex items-center justify-between rounded-md border px-2.5 py-1.5 text-[11px] font-mono">
-                            <span className="inline-flex items-center gap-1.5">
-                              <FileImage className="h-3.5 w-3.5 text-sky-500" />
-                              {m.mimeType}
-                            </span>
-                            <span className="text-muted-foreground">{fmtBytes(m.bytes)} · {String(m.sha256 || "").slice(0, 10)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {selected.payload && (
-                    <div className="space-y-2">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sanitized Payload (Gzip BLOB)</div>
-                      <pre className="max-h-60 overflow-auto rounded-md border bg-muted/50 p-2.5 text-[10px] font-mono">
-                        {JSON.stringify({
-                          clientRequest: selected.payload.clientRequest,
-                          clientResponse: selected.payload.clientResponse,
-                        }, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-                </>
-              )}
+            <CardContent>
+              <TraceDetailContent selected={selected} detailLoading={detailLoading} />
             </CardContent>
           </Card>
         )}
       </div>
+
+      {/* Full-screen Slide-Over Detail Sheet for Mobile & Tablet (< xl) */}
+      {selected && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-background xl:hidden">
+          <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+            <div className="min-w-0">
+              <div className="font-mono text-xs font-semibold truncate">{selected.trace?.trace_id}</div>
+              <div className="text-[11px] text-muted-foreground truncate">
+                {selected.trace?.final_provider}/{selected.trace?.final_model} · {fmtMs(selected.trace?.total_ms)} · {fmtUsd(selected.trace?.cost_total)}
+              </div>
+            </div>
+            <Button variant="outline" size="icon" onClick={() => setSelected(null)}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 pb-8">
+            <TraceDetailContent selected={selected} detailLoading={detailLoading} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
