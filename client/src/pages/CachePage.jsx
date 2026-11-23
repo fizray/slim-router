@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
-import { KpiCard, RangeSelector, SvgLineAreaChart } from "@/components/charts";
+import { KpiCard, RangeSelector, SvgMultiBarChart, SvgBarChart } from "@/components/charts";
 
 export function CachePage() {
   const [range, setRange] = useState("24h");
@@ -50,14 +50,32 @@ export function CachePage() {
         <KpiCard title="Cache Write Tokens" value={fmtNum(s.cacheWriteTokens)} sub={`Uncached: ${fmtNum(s.uncachedInputTokens)}`} icon={DatabaseZap} />
       </div>
 
-      <SvgLineAreaChart
-        title="Cache Hit Ratio (%) Over Time"
-        data={ts}
-        xKey="bucket"
-        area
-        series={[{ key: "tokenCacheHitRatioPct", label: "Hit Ratio %", color: "#0ea5e9" }]}
-        formatY={(v) => `${Math.round(v)}%`}
-      />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <SvgMultiBarChart
+          title="Prompt Tokens: Cache Hit vs Miss"
+          description="Cached read hits stacked with uncached miss & cache write tokens"
+          data={ts}
+          xKey="bucket"
+          mode="stacked"
+          totalLabel="Total Prompt"
+          series={[
+            { key: "cachedReadTokens", label: "Cache Hit (Read)", color: "#0ea5e9" },
+            { key: "uncachedInputTokens", label: "Cache Miss (Uncached)", color: "#64748b" },
+            { key: "cacheWriteTokens", label: "Cache Write", color: "#8b5cf6" },
+          ]}
+          formatY={(v) => fmtNum(Math.round(v))}
+          extraTooltip={(row) => `Hit Ratio: ${fmtPct(row.tokenCacheHitRatioPct)}`}
+        />
+        <SvgBarChart
+          title="Cache Hit Ratio (%) Over Time"
+          description="Share of prompt tokens served from cache per bucket"
+          data={ts.map((r) => ({ label: String(r.bucket || "").slice(-8), value: r.tokenCacheHitRatioPct || 0 }))}
+          xKey="label"
+          valueKey="value"
+          color="#0ea5e9"
+          formatY={(v) => `${Math.round(v)}%`}
+        />
+      </div>
 
       <Card>
         <CardHeader><CardTitle>Caching Performance by Model</CardTitle></CardHeader>

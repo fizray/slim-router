@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
-import { KpiCard, RangeSelector, SvgLineAreaChart } from "@/components/charts";
+import { KpiCard, RangeSelector, SvgMultiBarChart } from "@/components/charts";
 
 export function PerformancePage() {
   const [range, setRange] = useState("24h");
@@ -50,15 +50,22 @@ export function PerformancePage() {
         <KpiCard title="Avg TPOT" value={fmtMs(s.avgTpotMs)} sub="Time per output token" icon={Gauge} />
       </div>
 
-      <SvgLineAreaChart
-        title="Latency Trend (ms)"
+      <SvgMultiBarChart
+        title="Latency & TTFT Overlap (ms)"
+        description="Total latency bar overlapped with Time-to-First-Token (TTFT)"
         data={ts}
         xKey="bucket"
+        mode="overlap"
         series={[
-          { key: "avgLatencyMs", label: "Avg Latency", color: "#3b82f6" },
-          { key: "avgTtftMs", label: "Avg TTFT", color: "#10b981" },
+          { key: "avgLatencyMs", label: "Total Latency", color: "#3b82f6", opacity: 0.3 },
+          { key: "avgTtftMs", label: "TTFT (inner)", color: "#10b981", opacity: 0.92 },
         ]}
         formatY={(v) => fmtMs(v)}
+        extraTooltip={(row) =>
+          row.avgLatencyMs != null && row.avgTtftMs != null
+            ? `Generation: ${fmtMs(Math.max(0, row.avgLatencyMs - row.avgTtftMs))}`
+            : null
+        }
       />
 
       <Card>

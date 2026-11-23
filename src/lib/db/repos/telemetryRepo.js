@@ -557,21 +557,27 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
       bucket: formatBucketLabel(r.bucket_ts, table),
       label: new Date(r.bucket_ts).toISOString(),
       requests: 0,
+      successRequests: 0,
       errors: 0,
       costUsd: 0,
       cacheSavingsUsd: 0,
       cacheNetSavingsUsd: 0,
       promptTokens: 0,
+      uncachedInputTokens: 0,
       cachedReadTokens: 0,
+      cacheWriteTokens: 0,
       completionTokens: 0,
     };
     b.requests += r.requests;
+    b.successRequests += r.success_count;
     b.errors += r.error_count;
     b.costUsd += r.cost_total;
     b.cacheSavingsUsd += r.cache_net_savings;
     b.cacheNetSavingsUsd += r.cache_net_savings;
     b.promptTokens += r.prompt_tokens;
+    b.uncachedInputTokens += r.uncached_input_tokens;
     b.cachedReadTokens += r.cached_read_tokens;
+    b.cacheWriteTokens += r.cache_write_tokens;
     b.completionTokens += r.completion_tokens;
     byBucket.set(r.bucket_ts, b);
 
@@ -1059,6 +1065,7 @@ export async function getCacheAnalytics({ range = "7d" } = {}) {
     `SELECT bucket_ts AS bucketTs, SUM(requests) AS requests,
             SUM(cache_hit_requests) AS cacheHitRequests,
             SUM(prompt_tokens) AS promptTokens,
+            SUM(uncached_input_tokens) AS uncachedInputTokens,
             SUM(cached_read_tokens) AS cachedReadTokens,
             SUM(cache_write_tokens) AS cacheWriteTokens,
             SUM(cache_net_savings) AS cacheNetSavings

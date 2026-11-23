@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
-import { KpiCard, RangeSelector, SvgLineAreaChart } from "@/components/charts";
+import { KpiCard, RangeSelector, SvgMultiBarChart } from "@/components/charts";
 
 export function OverviewPage() {
   const [range, setRange] = useState("24h");
@@ -52,25 +52,29 @@ export function OverviewPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <SvgLineAreaChart
+        <SvgMultiBarChart
           title="Request Volume & Errors"
+          description="Stacked success vs error requests per bucket"
           data={ts}
           xKey="bucket"
-          area
+          mode="stacked"
+          totalLabel="Total Requests"
           series={[
-            { key: "requests", label: "Requests", color: "#3b82f6" },
+            { key: "successRequests", label: "Success", color: "#3b82f6" },
             { key: "errors", label: "Errors", color: "#ef4444" },
           ]}
           formatY={(v) => fmtNum(Math.round(v))}
         />
-        <SvgLineAreaChart
+        <SvgMultiBarChart
           title="Spend & Cache Savings (USD)"
+          description="Actual spend + USD saved by prompt caching"
           data={ts}
           xKey="bucket"
-          area
+          mode="stacked"
+          totalLabel="Without Cache"
           series={[
-            { key: "costUsd", label: "Cost", color: "#10b981" },
-            { key: "cacheSavingsUsd", label: "Saved", color: "#06b6d4" },
+            { key: "costUsd", label: "Actual Spend", color: "#10b981" },
+            { key: "cacheSavingsUsd", label: "Cache Saved", color: "#06b6d4" },
           ]}
           formatY={(v) => fmtUsd(v, 3)}
         />
