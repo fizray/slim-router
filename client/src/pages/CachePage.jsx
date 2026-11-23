@@ -69,8 +69,8 @@ export function CachePage() {
         <SvgBarChart
           title="Cache Hit Ratio (%) Over Time"
           description="Share of prompt tokens served from cache per bucket"
-          data={ts.map((r) => ({ label: String(r.bucket || "").slice(-8), value: r.tokenCacheHitRatioPct || 0 }))}
-          xKey="label"
+          data={ts.map((r) => ({ bucketTs: r.bucketTs, bucket: r.bucket, value: r.tokenCacheHitRatioPct || 0 }))}
+          xKey="bucket"
           valueKey="value"
           color="#0ea5e9"
           legendLabel="Hit Ratio %"

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+import { cn, fmtBucketLabel } from "@/lib/utils";
 
 const RANGES = [
   { id: "1h", label: "1H" },
@@ -162,7 +162,7 @@ export function SvgBarChart({
             <div className="relative">
               {hoverIdx !== null && data[hoverIdx] && (
                 <div className="pointer-events-none absolute right-2 top-1 z-10 rounded-md border bg-popover/95 px-2.5 py-1.5 text-[11px] shadow-md backdrop-blur">
-                  <span className="font-mono text-muted-foreground mr-2">{String(data[hoverIdx][xKey])}</span>
+                  <span className="font-mono text-muted-foreground mr-2">{fmtBucketLabel(data[hoverIdx], xKey)}</span>
                   <span className="font-mono font-semibold">{formatY(data[hoverIdx][valueKey])}</span>
                 </div>
               )}
@@ -192,8 +192,7 @@ export function SvgBarChart({
                   const x = slotX + (slotW - barW) / 2;
                   const y = pad.top + plotH - bh;
                   const isHovered = hoverIdx === i;
-                  const rawLabel = String(row[xKey] || "");
-                  const shortLabel = rawLabel.length > 14 ? rawLabel.slice(0, 14) : rawLabel;
+                  const shortLabel = fmtBucketLabel(row, xKey, { short: true });
                   return (
                     <g key={i}>
                       {isHovered && (
@@ -311,7 +310,7 @@ export function SvgMultiBarChart({
             <div className="relative">
               {hoverRow && (
                 <div className="pointer-events-none absolute right-2 top-1 z-10 min-w-[168px] rounded-md border bg-popover/95 px-2.5 py-2 text-[11px] shadow-md backdrop-blur">
-                  <div className="font-mono text-[10px] text-muted-foreground mb-1">{String(hoverRow[xKey] || "")}</div>
+                  <div className="font-mono text-[10px] text-muted-foreground mb-1">{fmtBucketLabel(hoverRow, xKey)}</div>
                   {series.map((s) => (
                     <div key={s.key} className="flex items-center justify-between gap-3 py-0.5">
                       <span className="inline-flex items-center gap-1.5">
@@ -359,8 +358,7 @@ export function SvgMultiBarChart({
                   const slotX = pad.left + i * slotW;
                   const x = slotX + (slotW - barW) / 2;
                   const isHovered = hoverIdx === i;
-                  const rawLabel = String(row[xKey] || "");
-                  const shortLabel = rawLabel.length > 10 ? rawLabel.slice(-8) : rawLabel;
+                  const shortLabel = fmtBucketLabel(row, xKey, { short: true });
 
                   const total = series.reduce((acc, s) => acc + Math.max(0, Number(row?.[s.key] ?? 0)), 0);
                   const totalH = total > 0 ? Math.max(3, (total / maxVal) * plotH) : 0;

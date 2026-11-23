@@ -41,3 +41,26 @@ export function fmtBytes(bytes) {
   if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${b} B`;
 }
+
+// Convert UTC epoch bucket timestamps into the browser's local timezone (e.g. GMT+7).
+export function fmtBucketLabel(row, xKey = "bucket", { short = false } = {}) {
+  const ts = row?.bucketTs;
+  if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
+    const d = new Date(ts);
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const mm = pad2(d.getMonth() + 1);
+    const dd = pad2(d.getDate());
+    const hh = pad2(d.getHours());
+    const min = pad2(d.getMinutes());
+    const raw = String(row?.[xKey] || "");
+    const isDaily = xKey === "day" || (raw.length > 0 && raw.length <= 10 && !raw.includes(":"));
+    if (isDaily) {
+      return short ? `${mm}-${dd}` : `${yyyy}-${mm}-${dd}`;
+    }
+    return short ? `${dd} ${hh}:${min}` : `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+  }
+  const raw = String(row?.[xKey] || "");
+  if (!short) return raw;
+  return raw.length > 14 ? raw.slice(0, 14) : raw;
+}
