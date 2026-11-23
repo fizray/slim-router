@@ -57,27 +57,27 @@ export function OverviewPage() {
         <KpiCard
           title="Total Tokens"
           value={fmtNum(s.totalTokens)}
-          sub={s.totalTokens ? `${Number(s.totalTokens).toLocaleString()} exact` : "0 tokens"}
+          sub={`${Number(s.totalTokens || 0).toLocaleString()} tokens`}
           icon={Layers}
         />
         <KpiCard
           title="Input (Uncached)"
           value={fmtNum(s.uncachedInputTokens)}
-          sub={`Total prompt: ${fmtNum(s.promptTokens)}`}
+          sub={`${Number(s.uncachedInputTokens || 0).toLocaleString()} tokens`}
           icon={ArrowDownToLine}
           accent="text-blue-500"
         />
         <KpiCard
           title="Cached Tokens"
           value={fmtNum(s.cachedReadTokens)}
-          sub={`${fmtPct(s.cacheHitRatioPct)} of prompt${s.cacheWriteTokens ? ` · Write: ${fmtNum(s.cacheWriteTokens)}` : ""}`}
+          sub={`${Number(s.cachedReadTokens || 0).toLocaleString()} tokens`}
           icon={Sparkles}
           accent="text-sky-500"
         />
         <KpiCard
           title="Output Tokens"
           value={fmtNum(s.completionTokens)}
-          sub={s.reasoningTokens ? `Reasoning: ${fmtNum(s.reasoningTokens)}` : "Completion tokens"}
+          sub={`${Number(s.completionTokens || 0).toLocaleString()} tokens`}
           icon={ArrowUpFromLine}
           accent="text-emerald-500"
         />
