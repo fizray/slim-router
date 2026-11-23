@@ -12,6 +12,7 @@ export async function GET(request) {
       endMs: sp.get("endMs") || undefined,
       cursorEpochMs: sp.get("cursor") || undefined,
       traceId: sp.get("traceId") || undefined,
+      search: sp.get("search") || undefined,
       provider: sp.get("provider") || undefined,
       model: sp.get("model") || undefined,
       apiKeyId: sp.get("apiKeyId") || undefined,

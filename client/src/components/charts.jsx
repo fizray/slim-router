@@ -127,13 +127,28 @@ export function SvgLineAreaChart({
 
               {series.map((s) => {
                 const pts = data.map((row, i) => `${xAt(i).toFixed(1)},${yAt(row[s.key]).toFixed(1)}`).join(" ");
-                const areaPath = data.length
+                const areaPath = data.length > 1
                   ? `M ${xAt(0).toFixed(1)},${(pad.top + plotH).toFixed(1)} L ${pts.replace(/ /g, " L ")} L ${xAt(data.length - 1).toFixed(1)},${(pad.top + plotH).toFixed(1)} Z`
                   : "";
                 return (
                   <g key={s.key}>
-                    {area && <path d={areaPath} fill={s.color} fillOpacity="0.14" />}
-                    <polyline fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" points={pts} />
+                    {area && areaPath && <path d={areaPath} fill={s.color} fillOpacity="0.14" />}
+                    {data.length > 1 && (
+                      <polyline fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" points={pts} />
+                    )}
+                    {data.map((row, i) => {
+                      const showDot = data.length <= 24 || hoverIdx === i;
+                      if (!showDot) return null;
+                      return (
+                        <circle
+                          key={i}
+                          cx={xAt(i)}
+                          cy={yAt(row[s.key])}
+                          r={hoverIdx === i || data.length === 1 ? 4 : 2.5}
+                          fill={s.color}
+                        />
+                      );
+                    })}
                   </g>
                 );
               })}
@@ -197,7 +212,8 @@ export function SvgBarChart({
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
 
-  const maxVal = Math.max(1, ...data.map((d) => Number(d?.[valueKey] || 0)));
+  const rawMax = Math.max(0, ...data.map((d) => Number(d?.[valueKey] || 0)));
+  const maxVal = rawMax > 0 ? rawMax : 1;
   const slotW = data.length > 0 ? plotW / data.length : plotW;
   const barW = Math.min(42, Math.max(6, slotW * 0.65));
 

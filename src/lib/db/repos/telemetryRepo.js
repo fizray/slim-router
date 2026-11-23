@@ -465,18 +465,29 @@ export async function getGlobalSpendWindow() {
 
 // ─── Range resolution helper ──────────────────────────────────────────────
 
+function formatBucketLabel(bucketTs, table) {
+  const iso = new Date(bucketTs).toISOString();
+  return table === "metrics_hourly"
+    ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}`
+    : iso.slice(0, 10);
+}
+
 export function resolveRangeWindow(range = "7d", fromMs = null, toMs = null) {
   const now = Date.now();
   if (fromMs && toMs) {
     const start = Number(fromMs);
     const end = Number(toMs);
+    const table = end - start <= 72 * 3600_000 ? "metrics_hourly" : "metrics_daily";
+    const bucketUnit = table === "metrics_hourly" ? 3600_000 : 86400_000;
     return {
       startMs: start,
+      bucketStartMs: Math.floor(start / bucketUnit) * bucketUnit,
       endMs: end,
-      table: end - start <= 72 * 3600_000 ? "metrics_hourly" : "metrics_daily",
+      table,
     };
   }
   const map = {
+    "1h": 3600_000,
     "24h": 24 * 3600_000,
     "7d": 7 * 86400_000,
     "30d": 30 * 86400_000,
@@ -485,10 +496,14 @@ export function resolveRangeWindow(range = "7d", fromMs = null, toMs = null) {
   };
   const span = map[range] ?? map["7d"];
   const startMs = range === "all" ? 0 : now - span;
+  const table = range === "1h" || range === "24h" ? "metrics_hourly" : "metrics_daily";
+  const bucketUnit = table === "metrics_hourly" ? 3600_000 : 86400_000;
+  const bucketStartMs = range === "all" ? 0 : Math.floor(startMs / bucketUnit) * bucketUnit;
   return {
     startMs,
+    bucketStartMs,
     endMs: now,
-    table: range === "24h" ? "metrics_hourly" : "metrics_daily",
+    table,
   };
 }
 
@@ -496,11 +511,11 @@ export function resolveRangeWindow(range = "7d", fromMs = null, toMs = null) {
 
 export async function getOverviewAnalytics({ range = "7d" } = {}) {
   const db = await getTelemetryDb();
-  const { startMs, endMs, table } = resolveRangeWindow(range);
+  const { bucketStartMs, endMs, table } = resolveRangeWindow(range);
 
   const rows = db.all(
     `SELECT * FROM ${table} WHERE bucket_ts >= ? AND bucket_ts <= ? ORDER BY bucket_ts ASC`,
-    [startMs, endMs]
+    [bucketStartMs, endMs]
   );
 
   let requests = 0, successCount = 0, errorCount = 0, fallbackCount = 0, cacheHitRequests = 0;
@@ -512,6 +527,7 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
   const ttftHists = [];
   const latHists = [];
   const byBucket = new Map();
+  const byModel = new Map();
 
   for (const r of rows) {
     requests += r.requests;
@@ -538,10 +554,12 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
 
     const b = byBucket.get(r.bucket_ts) || {
       bucketTs: r.bucket_ts,
+      bucket: formatBucketLabel(r.bucket_ts, table),
       label: new Date(r.bucket_ts).toISOString(),
       requests: 0,
       errors: 0,
       costUsd: 0,
+      cacheSavingsUsd: 0,
       cacheNetSavingsUsd: 0,
       promptTokens: 0,
       cachedReadTokens: 0,
@@ -550,58 +568,141 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
     b.requests += r.requests;
     b.errors += r.error_count;
     b.costUsd += r.cost_total;
+    b.cacheSavingsUsd += r.cache_net_savings;
     b.cacheNetSavingsUsd += r.cache_net_savings;
     b.promptTokens += r.prompt_tokens;
     b.cachedReadTokens += r.cached_read_tokens;
     b.completionTokens += r.completion_tokens;
     byBucket.set(r.bucket_ts, b);
+
+    const modelKey = `${r.provider || "unknown"}/${r.model || "unknown"}`;
+    const m = byModel.get(modelKey) || {
+      provider: r.provider || "unknown",
+      model: r.model || "unknown",
+      requests: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      cachedReadTokens: 0,
+      costUsd: 0,
+    };
+    m.requests += r.requests;
+    m.promptTokens += r.prompt_tokens;
+    m.completionTokens += r.completion_tokens;
+    m.cachedReadTokens += r.cached_read_tokens;
+    m.costUsd += r.cost_total;
+    byModel.set(modelKey, m);
   }
 
   const mergedTtft = mergeHistograms(ttftHists);
   const mergedLat = mergeHistograms(latHists);
 
-  // Rolling 7d burn rate
-  const sevenDaysAgo = Date.now() - 7 * 86400_000;
+  // Rolling 7d burn rate (floored to daily bucket boundary)
+  const sevenDaysAgoBucket = Math.floor((Date.now() - 7 * 86400_000) / 86400_000) * 86400_000;
   const burnRow = db.get(
     "SELECT COALESCE(SUM(cost_total), 0) AS spend7d FROM metrics_daily WHERE bucket_ts >= ?",
-    [sevenDaysAgo]
+    [sevenDaysAgoBucket]
   );
   const dailyBurnRateUsd = Number(burnRow?.spend7d || 0) / 7;
 
+  const totalTokens = promptTokens + completionTokens;
+  const successRatePct = requests > 0 ? Number(((successCount / requests) * 100).toFixed(2)) : 0;
+  const errorRatePct = requests > 0 ? Number(((errorCount / requests) * 100).toFixed(2)) : 0;
+  const fallbackRatePct = requests > 0 ? Number(((fallbackCount / requests) * 100).toFixed(2)) : 0;
+  const requestCacheHitRatePct = requests > 0 ? Number(((cacheHitRequests / requests) * 100).toFixed(2)) : 0;
+  const tokenCacheHitRatioPct = promptTokens > 0 ? Number(((cachedReadTokens / promptTokens) * 100).toFixed(2)) : 0;
+  const p50TtftMs = percentileFromHistogram(mergedTtft, 50);
+  const p95TtftMs = percentileFromHistogram(mergedTtft, 95);
+  const p99TtftMs = percentileFromHistogram(mergedTtft, 99);
+  const p50LatencyMs = percentileFromHistogram(mergedLat, 50);
+  const p95LatencyMs = percentileFromHistogram(mergedLat, 95);
+  const p99LatencyMs = percentileFromHistogram(mergedLat, 99);
+  const avgTtftMs = ttftSamples > 0 ? Math.round(sumTtft / ttftSamples) : null;
+  const avgLatencyMs = requests > 0 ? Math.round(sumTotalMs / requests) : null;
+  const avgOutputTps = tpsSamples > 0 ? Number((sumTps / tpsSamples).toFixed(2)) : null;
+
+  const kpis = {
+    requests,
+    successCount,
+    successRatePct,
+    errorCount,
+    errorRatePct,
+    fallbackCount,
+    fallbackRatePct,
+    promptTokens,
+    uncachedTokens,
+    cachedReadTokens,
+    cacheWriteTokens,
+    completionTokens,
+    reasoningTokens,
+    totalTokens,
+    costTotalUsd: Number(costTotal.toFixed(6)),
+    costWithoutCacheUsd: Number(costWithoutCache.toFixed(6)),
+    cacheNetSavingsUsd: Number(cacheNetSavings.toFixed(6)),
+    requestCacheHitRatePct,
+    tokenCacheHitRatioPct,
+    avgTtftMs,
+    p50TtftMs,
+    p95TtftMs,
+    p99TtftMs,
+    avgLatencyMs,
+    p50LatencyMs,
+    p95LatencyMs,
+    p99LatencyMs,
+    avgOutputTps,
+    dailyBurnRateUsd: Number(dailyBurnRateUsd.toFixed(4)),
+    projectedMonthlyUsd: Number((dailyBurnRateUsd * 30).toFixed(2)),
+  };
+
+  const summary = {
+    totalRequests: requests,
+    successCount,
+    successRatePct,
+    errorCount,
+    errorRatePct,
+    failoverCount: fallbackCount,
+    totalTokens,
+    totalCostUsd: kpis.costTotalUsd,
+    costWithoutCacheUsd: kpis.costWithoutCacheUsd,
+    cacheHitRatioPct: tokenCacheHitRatioPct,
+    netCacheSavingsUsd: kpis.cacheNetSavingsUsd,
+    p50LatencyMs,
+    p95LatencyMs,
+    p99LatencyMs,
+    p50TtftMs,
+    p95TtftMs,
+    avgLatencyMs,
+    avgTtftMs,
+    avgOutputTps,
+    dailyBurnRateUsd: kpis.dailyBurnRateUsd,
+    projectedMonthlyUsd: kpis.projectedMonthlyUsd,
+  };
+
+  const topModels = [...byModel.values()]
+    .map((m) => ({
+      provider: m.provider,
+      model: m.model,
+      requests: m.requests,
+      promptTokens: m.promptTokens,
+      completionTokens: m.completionTokens,
+      totalTokens: m.promptTokens + m.completionTokens,
+      cachedReadTokens: m.cachedReadTokens,
+      cacheHitRatioPct: m.promptTokens > 0 ? Number(((m.cachedReadTokens / m.promptTokens) * 100).toFixed(2)) : 0,
+      costUsd: Number(m.costUsd.toFixed(6)),
+    }))
+    .sort((a, b) => b.requests - a.requests || b.costUsd - a.costUsd)
+    .slice(0, 20);
+
   return {
     range,
-    kpis: {
-      requests,
-      successCount,
-      errorCount,
-      errorRatePct: requests > 0 ? Number(((errorCount / requests) * 100).toFixed(2)) : 0,
-      fallbackCount,
-      fallbackRatePct: requests > 0 ? Number(((fallbackCount / requests) * 100).toFixed(2)) : 0,
-      promptTokens,
-      uncachedTokens,
-      cachedReadTokens,
-      cacheWriteTokens,
-      completionTokens,
-      reasoningTokens,
-      totalTokens: promptTokens + completionTokens,
-      costTotalUsd: Number(costTotal.toFixed(6)),
-      costWithoutCacheUsd: Number(costWithoutCache.toFixed(6)),
-      cacheNetSavingsUsd: Number(cacheNetSavings.toFixed(6)),
-      requestCacheHitRatePct: requests > 0 ? Number(((cacheHitRequests / requests) * 100).toFixed(2)) : 0,
-      tokenCacheHitRatioPct: promptTokens > 0 ? Number(((cachedReadTokens / promptTokens) * 100).toFixed(2)) : 0,
-      avgTtftMs: ttftSamples > 0 ? Math.round(sumTtft / ttftSamples) : null,
-      p50TtftMs: percentileFromHistogram(mergedTtft, 50),
-      p95TtftMs: percentileFromHistogram(mergedTtft, 95),
-      p99TtftMs: percentileFromHistogram(mergedTtft, 99),
-      avgLatencyMs: requests > 0 ? Math.round(sumTotalMs / requests) : null,
-      p50LatencyMs: percentileFromHistogram(mergedLat, 50),
-      p95LatencyMs: percentileFromHistogram(mergedLat, 95),
-      p99LatencyMs: percentileFromHistogram(mergedLat, 99),
-      avgOutputTps: tpsSamples > 0 ? Number((sumTps / tpsSamples).toFixed(2)) : null,
-      dailyBurnRateUsd: Number(dailyBurnRateUsd.toFixed(4)),
-      projectedMonthlyUsd: Number((dailyBurnRateUsd * 30).toFixed(2)),
-    },
-    timeseries: [...byBucket.values()],
+    summary,
+    kpis,
+    topModels,
+    timeseries: [...byBucket.values()].map((b) => ({
+      ...b,
+      costUsd: Number(b.costUsd.toFixed(6)),
+      cacheSavingsUsd: Number(b.cacheSavingsUsd.toFixed(6)),
+      cacheNetSavingsUsd: Number(b.cacheNetSavingsUsd.toFixed(6)),
+    })),
   };
 }
 
@@ -609,18 +710,38 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
 
 export async function getPerformanceAnalytics({ range = "7d" } = {}) {
   const db = await getTelemetryDb();
-  const { startMs, endMs, table } = resolveRangeWindow(range);
+  const { startMs, bucketStartMs, endMs, table } = resolveRangeWindow(range);
 
   const rows = db.all(
     `SELECT * FROM ${table} WHERE bucket_ts >= ? AND bucket_ts <= ? ORDER BY bucket_ts ASC`,
-    [startMs, endMs]
+    [bucketStartMs, endMs]
   );
 
+  const overall = {
+    key: "all",
+    requests: 0,
+    sumTtft: 0,
+    ttftSamples: 0,
+    sumTotal: 0,
+    sumTps: 0,
+    tpsSamples: 0,
+    ttftHists: [],
+    latHists: [],
+  };
   const byModel = new Map();
   const byProvider = new Map();
   const byBucket = new Map();
 
   for (const r of rows) {
+    overall.requests += r.requests;
+    overall.sumTtft += r.sum_ttft_ms;
+    overall.ttftSamples += r.ttft_sample_count;
+    overall.sumTotal += r.sum_total_ms;
+    overall.sumTps += r.sum_tps;
+    overall.tpsSamples += r.tps_sample_count;
+    overall.ttftHists.push(r.ttft_histogram_json);
+    overall.latHists.push(r.latency_histogram_json);
+
     const modelKey = `${r.provider}/${r.model}`;
     const accum = (map, key, extra = {}) => {
       const e = map.get(key) || {
@@ -648,33 +769,52 @@ export async function getPerformanceAnalytics({ range = "7d" } = {}) {
 
     accum(byModel, modelKey, { provider: r.provider, model: r.model });
     accum(byProvider, r.provider || "unknown", { provider: r.provider || "unknown" });
-    accum(byBucket, r.bucket_ts, { bucketTs: r.bucket_ts, label: new Date(r.bucket_ts).toISOString() });
+    accum(byBucket, r.bucket_ts, {
+      bucketTs: r.bucket_ts,
+      bucket: formatBucketLabel(r.bucket_ts, table),
+      label: new Date(r.bucket_ts).toISOString(),
+    });
   }
 
   const finalize = (e) => {
     const tHist = mergeHistograms(e.ttftHists);
     const lHist = mergeHistograms(e.latHists);
     const avgTps = e.tpsSamples > 0 ? Number((e.sumTps / e.tpsSamples).toFixed(2)) : null;
+    const p50Ttft = percentileFromHistogram(tHist, 50);
+    const p95Ttft = percentileFromHistogram(tHist, 95);
+    const p99Ttft = percentileFromHistogram(tHist, 99);
+    const p50Lat = percentileFromHistogram(lHist, 50);
+    const p95Lat = percentileFromHistogram(lHist, 95);
+    const p99Lat = percentileFromHistogram(lHist, 99);
     return {
       key: e.key,
       provider: e.provider,
       model: e.model,
       bucketTs: e.bucketTs,
+      bucket: e.bucket,
       label: e.label,
       requests: e.requests,
       avgTtftMs: e.ttftSamples > 0 ? Math.round(e.sumTtft / e.ttftSamples) : null,
-      p50TtftMs: percentileFromHistogram(tHist, 50),
-      p95TtftMs: percentileFromHistogram(tHist, 95),
-      p99TtftMs: percentileFromHistogram(tHist, 99),
+      p50TtftMs: p50Ttft,
+      p95TtftMs: p95Ttft,
+      p99TtftMs: p99Ttft,
+      ttftP50Ms: p50Ttft,
+      ttftP95Ms: p95Ttft,
+      ttftP99Ms: p99Ttft,
       avgLatencyMs: e.requests > 0 ? Math.round(e.sumTotal / e.requests) : null,
-      p50LatencyMs: percentileFromHistogram(lHist, 50),
-      p95LatencyMs: percentileFromHistogram(lHist, 95),
-      p99LatencyMs: percentileFromHistogram(lHist, 99),
+      p50LatencyMs: p50Lat,
+      p95LatencyMs: p95Lat,
+      p99LatencyMs: p99Lat,
+      latencyP50Ms: p50Lat,
+      latencyP95Ms: p95Lat,
+      latencyP99Ms: p99Lat,
       avgOutputTps: avgTps,
       avgTpotMs: avgTps && avgTps > 0 ? Number((1000 / avgTps).toFixed(2)) : null,
       streamingSamples: e.tpsSamples,
     };
   };
+
+  const overallFin = finalize(overall);
 
   // Stream vs non-stream summary from request_traces
   const modeBreakdown = db.all(
@@ -689,6 +829,20 @@ export async function getPerformanceAnalytics({ range = "7d" } = {}) {
 
   return {
     range,
+    summary: {
+      totalRequests: overallFin.requests,
+      latencyP50Ms: overallFin.latencyP50Ms,
+      latencyP95Ms: overallFin.latencyP95Ms,
+      latencyP99Ms: overallFin.latencyP99Ms,
+      ttftP50Ms: overallFin.ttftP50Ms,
+      ttftP95Ms: overallFin.ttftP95Ms,
+      ttftP99Ms: overallFin.ttftP99Ms,
+      avgLatencyMs: overallFin.avgLatencyMs,
+      avgTtftMs: overallFin.avgTtftMs,
+      avgOutputTps: overallFin.avgOutputTps,
+      avgTpotMs: overallFin.avgTpotMs,
+      streamingSamples: overallFin.streamingSamples,
+    },
     byModel: [...byModel.values()].map(finalize).sort((a, b) => b.requests - a.requests),
     byProvider: [...byProvider.values()].map(finalize).sort((a, b) => b.requests - a.requests),
     timeseries: [...byBucket.values()].map(finalize),
@@ -707,7 +861,7 @@ export async function getPerformanceAnalytics({ range = "7d" } = {}) {
 
 export async function getCostAnalytics({ range = "30d" } = {}) {
   const db = await getTelemetryDb();
-  const { startMs, endMs, table } = resolveRangeWindow(range);
+  const { startMs, bucketStartMs, endMs, table } = resolveRangeWindow(range);
 
   const summary = db.get(
     `SELECT
@@ -724,7 +878,7 @@ export async function getCostAnalytics({ range = "30d" } = {}) {
     [startMs, endMs]
   );
 
-  const byModel = db.all(
+  const byModelRaw = db.all(
     `SELECT final_provider AS provider, final_model AS model, COUNT(*) AS requests,
             SUM(prompt_tokens) AS prompt_tokens, SUM(completion_tokens) AS completion_tokens,
             SUM(cached_read_tokens) AS cached_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens,
@@ -736,6 +890,17 @@ export async function getCostAnalytics({ range = "30d" } = {}) {
      GROUP BY final_provider, final_model ORDER BY cost_total DESC`,
     [startMs, endMs]
   );
+
+  const byModel = byModelRaw.map((m) => ({
+    ...m,
+    costInputUsd: Number((m.cost_input || 0).toFixed(6)),
+    costOutputUsd: Number((m.cost_output || 0).toFixed(6)),
+    costReasoningUsd: Number((m.cost_reasoning || 0).toFixed(6)),
+    costCacheReadUsd: Number((m.cost_cache_read || 0).toFixed(6)),
+    costCacheWriteUsd: Number((m.cost_cache_write || 0).toFixed(6)),
+    costTotalUsd: Number((m.cost_total || 0).toFixed(6)),
+    netCacheSavingsUsd: Number((m.cache_net_savings || 0).toFixed(6)),
+  }));
 
   const byProvider = db.all(
     `SELECT final_provider AS provider, COUNT(*) AS requests,
@@ -769,27 +934,49 @@ export async function getCostAnalytics({ range = "30d" } = {}) {
             SUM(cache_net_savings) AS cacheNetSavings, SUM(requests) AS requests
      FROM ${table} WHERE bucket_ts >= ? AND bucket_ts <= ?
      GROUP BY bucket_ts ORDER BY bucket_ts ASC`,
-    [startMs, endMs]
+    [bucketStartMs, endMs]
   );
 
+  const dailyStartMs = range === "all" ? 0 : Math.floor(startMs / 86400_000) * 86400_000;
+  const dailyRows = db.all(
+    `SELECT bucket_ts AS bucketTs, SUM(cost_total) AS costTotal,
+            SUM(cost_without_cache) AS costWithoutCache,
+            SUM(cache_net_savings) AS cacheNetSavings, SUM(requests) AS requests
+     FROM metrics_daily WHERE bucket_ts >= ? AND bucket_ts <= ?
+     GROUP BY bucket_ts ORDER BY bucket_ts ASC`,
+    [dailyStartMs, endMs]
+  );
+
+  const sevenDaysAgoBucket = Math.floor((Date.now() - 7 * 86400_000) / 86400_000) * 86400_000;
   const spend7d = db.get(
     "SELECT COALESCE(SUM(cost_total), 0) AS spend FROM metrics_daily WHERE bucket_ts >= ?",
-    [Date.now() - 7 * 86400_000]
+    [sevenDaysAgoBucket]
   )?.spend || 0;
   const dailyBurnUsd = Number(spend7d) / 7;
+
+  const totalRequests = summary?.requests || 0;
+  const totalCostUsd = Number((summary?.cost_total || 0).toFixed(6));
+  const costWithoutCacheUsd = Number((summary?.cost_without_cache || 0).toFixed(6));
+  const netCacheSavingsUsd = Number((summary?.cache_net_savings || 0).toFixed(6));
+  const avgCostPerRequestUsd = totalRequests > 0 ? Number((totalCostUsd / totalRequests).toFixed(6)) : 0;
 
   return {
     range,
     summary: {
-      requests: summary?.requests || 0,
+      requests: totalRequests,
+      totalRequests,
       costInput: Number((summary?.cost_input || 0).toFixed(6)),
       costOutput: Number((summary?.cost_output || 0).toFixed(6)),
       costReasoning: Number((summary?.cost_reasoning || 0).toFixed(6)),
       costCacheRead: Number((summary?.cost_cache_read || 0).toFixed(6)),
       costCacheWrite: Number((summary?.cost_cache_write || 0).toFixed(6)),
-      costTotal: Number((summary?.cost_total || 0).toFixed(6)),
-      costWithoutCache: Number((summary?.cost_without_cache || 0).toFixed(6)),
-      cacheNetSavings: Number((summary?.cache_net_savings || 0).toFixed(6)),
+      costTotal: totalCostUsd,
+      totalCostUsd,
+      costWithoutCache: costWithoutCacheUsd,
+      costWithoutCacheUsd,
+      cacheNetSavings: netCacheSavingsUsd,
+      netCacheSavingsUsd,
+      avgCostPerRequestUsd,
       dailyBurnRateUsd: Number(dailyBurnUsd.toFixed(4)),
       projectedMonthlyUsd: Number((dailyBurnUsd * 30).toFixed(2)),
     },
@@ -797,7 +984,20 @@ export async function getCostAnalytics({ range = "30d" } = {}) {
     byProvider,
     byApiKey,
     byTag,
-    timeseries: timeseries.map((t) => ({ ...t, label: new Date(t.bucketTs).toISOString() })),
+    daily: dailyRows.map((d) => ({
+      bucketTs: d.bucketTs,
+      day: new Date(d.bucketTs).toISOString().slice(0, 10),
+      costUsd: Number((d.costTotal || 0).toFixed(6)),
+      costWithoutCacheUsd: Number((d.costWithoutCache || 0).toFixed(6)),
+      cacheSavingsUsd: Number((d.cacheNetSavings || 0).toFixed(6)),
+      requests: d.requests || 0,
+    })),
+    timeseries: timeseries.map((t) => ({
+      ...t,
+      bucket: formatBucketLabel(t.bucketTs, table),
+      label: new Date(t.bucketTs).toISOString(),
+      costUsd: Number((t.costTotal || 0).toFixed(6)),
+    })),
   };
 }
 
@@ -805,7 +1005,7 @@ export async function getCostAnalytics({ range = "30d" } = {}) {
 
 export async function getCacheAnalytics({ range = "7d" } = {}) {
   const db = await getTelemetryDb();
-  const { startMs, endMs, table } = resolveRangeWindow(range);
+  const { startMs, bucketStartMs, endMs, table } = resolveRangeWindow(range);
 
   const summary = db.get(
     `SELECT
@@ -864,7 +1064,7 @@ export async function getCacheAnalytics({ range = "7d" } = {}) {
             SUM(cache_net_savings) AS cacheNetSavings
      FROM ${table} WHERE bucket_ts >= ? AND bucket_ts <= ?
      GROUP BY bucket_ts ORDER BY bucket_ts ASC`,
-    [startMs, endMs]
+    [bucketStartMs, endMs]
   );
 
   const reqs = summary?.requests || 0;
@@ -890,22 +1090,35 @@ export async function getCacheAnalytics({ range = "7d" } = {}) {
       netCacheSavingsUsd: Number((summary?.cache_net_savings || 0).toFixed(6)),
       cacheThrashingDetected: (summary?.cache_net_savings || 0) < 0,
     },
-    byModel: byModel.map((m) => ({
-      ...m,
-      requestHitRatePct: m.requests > 0 ? Number(((m.cache_hit_requests / m.requests) * 100).toFixed(2)) : 0,
-      tokenHitRatioPct: m.prompt_tokens > 0 ? Number(((m.cached_read_tokens / m.prompt_tokens) * 100).toFixed(2)) : 0,
-      readToWriteRatio: m.cache_write_tokens > 0 ? Number((m.cached_read_tokens / m.cache_write_tokens).toFixed(2)) : null,
-    })),
+    byModel: byModel.map((m) => {
+      const tokenHitRatioPct = m.prompt_tokens > 0 ? Number(((m.cached_read_tokens / m.prompt_tokens) * 100).toFixed(2)) : 0;
+      return {
+        ...m,
+        promptTokens: m.prompt_tokens || 0,
+        cachedReadTokens: m.cached_read_tokens || 0,
+        cacheWriteTokens: m.cache_write_tokens || 0,
+        requestHitRatePct: m.requests > 0 ? Number(((m.cache_hit_requests / m.requests) * 100).toFixed(2)) : 0,
+        tokenHitRatioPct,
+        tokenCacheHitRatioPct: tokenHitRatioPct,
+        netCacheSavingsUsd: Number((m.cache_net_savings || 0).toFixed(6)),
+        readToWriteRatio: m.cache_write_tokens > 0 ? Number((m.cached_read_tokens / m.cache_write_tokens).toFixed(2)) : null,
+      };
+    }),
     worstSessions: worstSessions.map((s) => ({
       ...s,
       tokenHitRatioPct: s.prompt_tokens > 0 ? Number(((s.cached_read_tokens / s.prompt_tokens) * 100).toFixed(2)) : 0,
     })),
-    timeseries: timeseries.map((t) => ({
-      ...t,
-      label: new Date(t.bucketTs).toISOString(),
-      tokenHitRatioPct: t.promptTokens > 0 ? Number(((t.cachedReadTokens / t.promptTokens) * 100).toFixed(2)) : 0,
-      requestHitRatePct: t.requests > 0 ? Number(((t.cacheHitRequests / t.requests) * 100).toFixed(2)) : 0,
-    })),
+    timeseries: timeseries.map((t) => {
+      const tokenHitRatioPct = t.promptTokens > 0 ? Number(((t.cachedReadTokens / t.promptTokens) * 100).toFixed(2)) : 0;
+      return {
+        ...t,
+        bucket: formatBucketLabel(t.bucketTs, table),
+        label: new Date(t.bucketTs).toISOString(),
+        tokenHitRatioPct,
+        tokenCacheHitRatioPct: tokenHitRatioPct,
+        requestHitRatePct: t.requests > 0 ? Number(((t.cacheHitRequests / t.requests) * 100).toFixed(2)) : 0,
+      };
+    }),
   };
 }
 
@@ -914,6 +1127,16 @@ export async function getCacheAnalytics({ range = "7d" } = {}) {
 export async function getReliabilityAnalytics({ range = "7d" } = {}) {
   const db = await getTelemetryDb();
   const { startMs, endMs } = resolveRangeWindow(range);
+
+  const overall = db.get(
+    `SELECT COUNT(*) AS requests,
+            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
+            SUM(fallback_triggered) AS fallback_count,
+            SUM(CASE WHEN http_status = 429 OR error_category = 'rate_limit' THEN 1 ELSE 0 END) AS rate_limited_count
+     FROM request_traces WHERE epoch_ms >= ? AND epoch_ms <= ?`,
+    [startMs, endMs]
+  );
 
   const byProvider = db.all(
     `SELECT final_provider AS provider, COUNT(*) AS requests,
@@ -935,6 +1158,14 @@ export async function getReliabilityAnalytics({ range = "7d" } = {}) {
     [startMs, endMs]
   );
 
+  const categoryTotals = new Map();
+  for (const row of errorTaxonomy) {
+    categoryTotals.set(row.category, (categoryTotals.get(row.category) || 0) + (row.count || 0));
+  }
+  const errorCategories = [...categoryTotals.entries()]
+    .map(([category, count]) => ({ category, count }))
+    .sort((a, b) => b.count - a.count);
+
   const comboStats = db.all(
     `SELECT combo_name AS comboName, COUNT(*) AS requests,
             SUM(fallback_triggered) AS fallback_triggered,
@@ -955,12 +1186,34 @@ export async function getReliabilityAnalytics({ range = "7d" } = {}) {
     [startMs, endMs]
   );
 
+  const totalRequests = overall?.requests || 0;
+  const successCount = overall?.success_count || 0;
+  const errorCount = overall?.error_count || 0;
+  const failoverCount = overall?.fallback_count || 0;
+  const rateLimitedCount = overall?.rate_limited_count || 0;
+
   return {
     range,
-    byProvider: byProvider.map((p) => ({
-      ...p,
-      uptimePct: p.requests > 0 ? Number(((p.success_count / p.requests) * 100).toFixed(2)) : 100,
-    })),
+    summary: {
+      totalRequests,
+      successCount,
+      errorCount,
+      successRatePct: totalRequests > 0 ? Number(((successCount / totalRequests) * 100).toFixed(2)) : 0,
+      errorRatePct: totalRequests > 0 ? Number(((errorCount / totalRequests) * 100).toFixed(2)) : 0,
+      failoverCount,
+      rateLimitedCount,
+    },
+    byProvider: byProvider.map((p) => {
+      const pct = p.requests > 0 ? Number(((p.success_count / p.requests) * 100).toFixed(2)) : 100;
+      return {
+        ...p,
+        errors: p.error_count || 0,
+        failovers: p.fallback_count || 0,
+        uptimePct: pct,
+        successRatePct: pct,
+      };
+    }),
+    errorCategories,
     errorTaxonomy,
     comboStats,
     recentErrors,
@@ -971,39 +1224,51 @@ export async function getReliabilityAnalytics({ range = "7d" } = {}) {
 
 export async function listTraces(filters = {}) {
   const db = await getTelemetryDb();
-  const where = [];
-  const params = [];
+  const baseWhere = [];
+  const baseParams = [];
 
-  if (filters.startMs) { where.push("epoch_ms >= ?"); params.push(Number(filters.startMs)); }
-  if (filters.endMs) { where.push("epoch_ms <= ?"); params.push(Number(filters.endMs)); }
-  if (filters.cursorEpochMs) { where.push("epoch_ms < ?"); params.push(Number(filters.cursorEpochMs)); }
-  if (filters.traceId) { where.push("trace_id LIKE ?"); params.push(`%${filters.traceId}%`); }
-  if (filters.provider) { where.push("final_provider = ?"); params.push(filters.provider); }
-  if (filters.model) { where.push("(final_model LIKE ? OR requested_model LIKE ?)"); params.push(`%${filters.model}%`, `%${filters.model}%`); }
-  if (filters.apiKeyId) { where.push("api_key_id = ?"); params.push(filters.apiKeyId); }
-  if (filters.tag) { where.push("client_tag = ?"); params.push(filters.tag); }
-  if (filters.sessionId) { where.push("session_id = ?"); params.push(filters.sessionId); }
-  if (filters.status) { where.push("status = ?"); params.push(filters.status); }
-  if (filters.errorCategory) { where.push("error_category = ?"); params.push(filters.errorCategory); }
-  if (filters.minLatencyMs) { where.push("total_ms >= ?"); params.push(Number(filters.minLatencyMs)); }
-  if (filters.cacheFilter === "hit") { where.push("cached_read_tokens > 0"); }
-  if (filters.cacheFilter === "miss") { where.push("cached_read_tokens = 0"); }
-  if (filters.multimodalOnly) { where.push("has_multimodal = 1"); }
-  if (filters.fallbackOnly) { where.push("fallback_triggered = 1"); }
+  if (filters.startMs) { baseWhere.push("epoch_ms >= ?"); baseParams.push(Number(filters.startMs)); }
+  if (filters.endMs) { baseWhere.push("epoch_ms <= ?"); baseParams.push(Number(filters.endMs)); }
+  if (filters.traceId) { baseWhere.push("trace_id LIKE ?"); baseParams.push(`%${filters.traceId}%`); }
+  if (filters.provider) { baseWhere.push("final_provider = ?"); baseParams.push(filters.provider); }
+  if (filters.model) { baseWhere.push("(final_model LIKE ? OR requested_model LIKE ?)"); baseParams.push(`%${filters.model}%`, `%${filters.model}%`); }
+  if (filters.search) {
+    const q = `%${filters.search}%`;
+    baseWhere.push("(trace_id LIKE ? OR final_model LIKE ? OR requested_model LIKE ? OR endpoint LIKE ? OR final_provider LIKE ?)");
+    baseParams.push(q, q, q, q, q);
+  }
+  if (filters.apiKeyId) { baseWhere.push("api_key_id = ?"); baseParams.push(filters.apiKeyId); }
+  if (filters.tag) { baseWhere.push("client_tag = ?"); baseParams.push(filters.tag); }
+  if (filters.sessionId) { baseWhere.push("session_id = ?"); baseParams.push(filters.sessionId); }
+  if (filters.status) { baseWhere.push("status = ?"); baseParams.push(filters.status); }
+  if (filters.errorCategory) { baseWhere.push("error_category = ?"); baseParams.push(filters.errorCategory); }
+  if (filters.minLatencyMs) { baseWhere.push("total_ms >= ?"); baseParams.push(Number(filters.minLatencyMs)); }
+  if (filters.cacheFilter === "hit") { baseWhere.push("cached_read_tokens > 0"); }
+  if (filters.cacheFilter === "miss") { baseWhere.push("cached_read_tokens = 0"); }
+  if (filters.multimodalOnly) { baseWhere.push("has_multimodal = 1"); }
+  if (filters.fallbackOnly) { baseWhere.push("fallback_triggered = 1"); }
+
+  const countWhereSql = baseWhere.length ? `WHERE ${baseWhere.join(" AND ")}` : "";
+  const totalRow = db.get(`SELECT COUNT(*) AS total FROM request_traces ${countWhereSql}`, baseParams);
+  const total = Number(totalRow?.total || 0);
+
+  const pageWhere = [...baseWhere];
+  const pageParams = [...baseParams];
+  if (filters.cursorEpochMs) { pageWhere.push("epoch_ms < ?"); pageParams.push(Number(filters.cursorEpochMs)); }
 
   const limit = Math.min(Math.max(Number(filters.limit) || 50, 1), 200);
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const whereSql = pageWhere.length ? `WHERE ${pageWhere.join(" AND ")}` : "";
 
   const items = db.all(
     `SELECT * FROM request_traces ${whereSql} ORDER BY epoch_ms DESC LIMIT ?`,
-    [...params, limit + 1]
+    [...pageParams, limit + 1]
   );
 
   const hasMore = items.length > limit;
   const page = hasMore ? items.slice(0, limit) : items;
   const nextCursor = hasMore ? page[page.length - 1].epoch_ms : null;
 
-  return { items: page, nextCursor, hasMore };
+  return { items: page, total, nextCursor, hasMore };
 }
 
 export async function getTraceById(traceId) {
