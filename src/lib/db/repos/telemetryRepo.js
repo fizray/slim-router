@@ -304,14 +304,16 @@ export async function recordTraceAndSpans(trace, spans = []) {
   const epochMs = trace.epoch_ms || Date.now();
   const timestamp = trace.timestamp || new Date(epochMs).toISOString();
 
-  // Compute streaming-only TPOT and TPS safely (never Infinity / NaN, NULL for non-streaming)
+  // Compute streaming-only TPOT and TPS safely (never Infinity / NaN, NULL for non-streaming).
+  // Require a >=250ms decode window so single-chunk buffered tool calls / thinking bursts
+  // (e.g. 1300 tokens arriving in 44ms) don't record bogus 30,000 tok/s spikes.
   const isStream = trace.is_stream ? 1 : 0;
   const ttftMs = trace.ttft_ms != null && Number.isFinite(trace.ttft_ms) ? Math.max(0, Math.round(trace.ttft_ms)) : null;
   const totalMs = Math.max(0, Math.round(trace.total_ms || 0));
   let tpotMs = null;
   let outputTps = null;
   const effectiveOut = trace.completion_tokens || 0;
-  if (isStream === 1 && ttftMs !== null && effectiveOut > 1 && totalMs > ttftMs) {
+  if (isStream === 1 && ttftMs !== null && effectiveOut > 1 && (totalMs - ttftMs) >= 250) {
     const genMs = totalMs - ttftMs;
     tpotMs = Number((genMs / (effectiveOut - 1)).toFixed(3));
     outputTps = Number((effectiveOut / (genMs / 1000)).toFixed(2));
@@ -797,16 +799,74 @@ export async function getPerformanceAnalytics({ range = "7d" } = {}) {
     });
   }
 
-  const finalize = (e) => {
+  // Compute true token-weighted streaming throughput (SUM(completion_tokens) / SUM(gen_ms))
+  // from request_traces with >=250ms decode window so single-chunk bursts cannot skew averages.
+  const weightedOverall = db.get(
+    `SELECT COUNT(*) AS samples,
+            COALESCE(SUM(completion_tokens), 0) AS out_tokens,
+            COALESCE(SUM(total_ms - ttft_ms), 0) AS gen_ms
+     FROM request_traces
+     WHERE epoch_ms >= ? AND epoch_ms <= ?
+       AND is_stream = 1 AND ttft_ms IS NOT NULL
+       AND (total_ms - ttft_ms) >= 250 AND completion_tokens > 1`,
+    [startMs, endMs]
+  );
+
+  const weightedByModelRows = db.all(
+    `SELECT final_provider AS provider, final_model AS model,
+            COUNT(*) AS samples,
+            COALESCE(SUM(completion_tokens), 0) AS out_tokens,
+            COALESCE(SUM(total_ms - ttft_ms), 0) AS gen_ms
+     FROM request_traces
+     WHERE epoch_ms >= ? AND epoch_ms <= ?
+       AND is_stream = 1 AND ttft_ms IS NOT NULL
+       AND (total_ms - ttft_ms) >= 250 AND completion_tokens > 1
+     GROUP BY final_provider, final_model`,
+    [startMs, endMs]
+  );
+  const weightedByModel = new Map(
+    weightedByModelRows.map((r) => [`${r.provider}/${r.model}`, r])
+  );
+
+  const weightedByProviderRows = db.all(
+    `SELECT final_provider AS provider,
+            COUNT(*) AS samples,
+            COALESCE(SUM(completion_tokens), 0) AS out_tokens,
+            COALESCE(SUM(total_ms - ttft_ms), 0) AS gen_ms
+     FROM request_traces
+     WHERE epoch_ms >= ? AND epoch_ms <= ?
+       AND is_stream = 1 AND ttft_ms IS NOT NULL
+       AND (total_ms - ttft_ms) >= 250 AND completion_tokens > 1
+     GROUP BY final_provider`,
+    [startMs, endMs]
+  );
+  const weightedByProvider = new Map(
+    weightedByProviderRows.map((r) => [r.provider || "unknown", r])
+  );
+
+  const calcWeightedTps = (w, fallbackTps) => {
+    if (w && w.gen_ms > 0 && w.out_tokens > 0) {
+      return Number(((w.out_tokens * 1000) / w.gen_ms).toFixed(2));
+    }
+    return fallbackTps;
+  };
+
+  const finalize = (e, weighted = null) => {
     const tHist = mergeHistograms(e.ttftHists);
     const lHist = mergeHistograms(e.latHists);
-    const avgTps = e.tpsSamples > 0 ? Number((e.sumTps / e.tpsSamples).toFixed(2)) : null;
+    const fallbackTps = e.tpsSamples > 0 ? Number((e.sumTps / e.tpsSamples).toFixed(2)) : null;
+    const avgTps = calcWeightedTps(weighted, fallbackTps);
     const p50Ttft = percentileFromHistogram(tHist, 50);
     const p95Ttft = percentileFromHistogram(tHist, 95);
     const p99Ttft = percentileFromHistogram(tHist, 99);
     const p50Lat = percentileFromHistogram(lHist, 50);
     const p95Lat = percentileFromHistogram(lHist, 95);
     const p99Lat = percentileFromHistogram(lHist, 99);
+    const avgLat = e.requests > 0 ? Math.round(e.sumTotal / e.requests) : null;
+    const rawAvgTtft = e.ttftSamples > 0 ? Math.round(e.sumTtft / e.ttftSamples) : null;
+    // When a bucket mixes short non-streaming calls with slower streaming calls, clamp display
+    // avgTtftMs <= avgLatencyMs so overlapping latency/TTFT bars remain physically consistent.
+    const avgTtft = rawAvgTtft != null && avgLat != null ? Math.min(rawAvgTtft, avgLat) : rawAvgTtft;
     return {
       key: e.key,
       provider: e.provider,
@@ -815,14 +875,14 @@ export async function getPerformanceAnalytics({ range = "7d" } = {}) {
       bucket: e.bucket,
       label: e.label,
       requests: e.requests,
-      avgTtftMs: e.ttftSamples > 0 ? Math.round(e.sumTtft / e.ttftSamples) : null,
+      avgTtftMs: avgTtft,
       p50TtftMs: p50Ttft,
       p95TtftMs: p95Ttft,
       p99TtftMs: p99Ttft,
       ttftP50Ms: p50Ttft,
       ttftP95Ms: p95Ttft,
       ttftP99Ms: p99Ttft,
-      avgLatencyMs: e.requests > 0 ? Math.round(e.sumTotal / e.requests) : null,
+      avgLatencyMs: avgLat,
       p50LatencyMs: p50Lat,
       p95LatencyMs: p95Lat,
       p99LatencyMs: p99Lat,
@@ -831,17 +891,22 @@ export async function getPerformanceAnalytics({ range = "7d" } = {}) {
       latencyP99Ms: p99Lat,
       avgOutputTps: avgTps,
       avgTpotMs: avgTps && avgTps > 0 ? Number((1000 / avgTps).toFixed(2)) : null,
-      streamingSamples: e.tpsSamples,
+      streamingSamples: weighted?.samples ?? e.tpsSamples,
     };
   };
 
-  const overallFin = finalize(overall);
+  const overallFin = finalize(overall, weightedOverall);
 
   // Stream vs non-stream summary from request_traces
   const modeBreakdown = db.all(
     `SELECT is_stream, COUNT(*) AS requests,
             AVG(ttft_ms) AS avg_ttft_ms, AVG(total_ms) AS avg_total_ms,
-            AVG(output_tps) AS avg_tps, AVG(tpot_ms) AS avg_tpot_ms
+            CASE
+              WHEN is_stream = 1 AND SUM(CASE WHEN ttft_ms IS NOT NULL AND (total_ms - ttft_ms) >= 250 AND completion_tokens > 1 THEN (total_ms - ttft_ms) ELSE 0 END) > 0
+              THEN SUM(CASE WHEN ttft_ms IS NOT NULL AND (total_ms - ttft_ms) >= 250 AND completion_tokens > 1 THEN completion_tokens ELSE 0 END) * 1000.0
+                 / SUM(CASE WHEN ttft_ms IS NOT NULL AND (total_ms - ttft_ms) >= 250 AND completion_tokens > 1 THEN (total_ms - ttft_ms) ELSE 0 END)
+              ELSE NULL
+            END AS weighted_tps
      FROM request_traces
      WHERE epoch_ms >= ? AND epoch_ms <= ?
      GROUP BY is_stream`,
@@ -864,17 +929,24 @@ export async function getPerformanceAnalytics({ range = "7d" } = {}) {
       avgTpotMs: overallFin.avgTpotMs,
       streamingSamples: overallFin.streamingSamples,
     },
-    byModel: [...byModel.values()].map(finalize).sort((a, b) => b.requests - a.requests),
-    byProvider: [...byProvider.values()].map(finalize).sort((a, b) => b.requests - a.requests),
-    timeseries: [...byBucket.values()].map(finalize),
-    streamModeBreakdown: modeBreakdown.map((m) => ({
-      mode: m.is_stream ? "streaming" : "non-streaming",
-      requests: m.requests,
-      avgTtftMs: m.avg_ttft_ms != null ? Math.round(m.avg_ttft_ms) : null,
-      avgLatencyMs: m.avg_total_ms != null ? Math.round(m.avg_total_ms) : null,
-      avgOutputTps: m.avg_tps != null ? Number(m.avg_tps.toFixed(2)) : null,
-      avgTpotMs: m.avg_tpot_ms != null ? Number(m.avg_tpot_ms.toFixed(2)) : null,
-    })),
+    byModel: [...byModel.values()]
+      .map((e) => finalize(e, weightedByModel.get(e.key)))
+      .sort((a, b) => b.requests - a.requests),
+    byProvider: [...byProvider.values()]
+      .map((e) => finalize(e, weightedByProvider.get(e.key)))
+      .sort((a, b) => b.requests - a.requests),
+    timeseries: [...byBucket.values()].map((e) => finalize(e)),
+    streamModeBreakdown: modeBreakdown.map((m) => {
+      const avgTps = m.weighted_tps != null ? Number(m.weighted_tps.toFixed(2)) : null;
+      return {
+        mode: m.is_stream ? "streaming" : "non-streaming",
+        requests: m.requests,
+        avgTtftMs: m.avg_ttft_ms != null ? Math.round(m.avg_ttft_ms) : null,
+        avgLatencyMs: m.avg_total_ms != null ? Math.round(m.avg_total_ms) : null,
+        avgOutputTps: avgTps,
+        avgTpotMs: avgTps && avgTps > 0 ? Number((1000 / avgTps).toFixed(2)) : null,
+      };
+    }),
   };
 }
 
