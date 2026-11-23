@@ -73,6 +73,7 @@ export function CachePage() {
           xKey="label"
           valueKey="value"
           color="#0ea5e9"
+          legendLabel="Hit Ratio %"
           formatY={(v) => `${Math.round(v)}%`}
         />
       </div>

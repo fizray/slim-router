@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Plus, Trash2, Copy, Check, KeyRound } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { fmtNum } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -186,7 +187,7 @@ export function ApiKeysPage() {
                   <TableRow key={k.id}>
                     <TableCell className="font-medium">{k.name}</TableCell>
                     <TableCell className="font-mono text-muted-foreground">{k.keyHint}</TableCell>
-                    <TableCell className="font-mono">{k.rpmLimit || "∞"} / {k.tpmLimit || "∞"}</TableCell>
+                    <TableCell className="font-mono">{k.rpmLimit ? fmtNum(k.rpmLimit) : "∞"} / {k.tpmLimit ? fmtNum(k.tpmLimit) : "∞"}</TableCell>
                     <TableCell className="font-mono">{k.dailyBudgetUsd ? `$${k.dailyBudgetUsd}` : "∞"} / {k.monthlyBudgetUsd ? `$${k.monthlyBudgetUsd}` : "∞"}</TableCell>
                     <TableCell>
                       <Badge variant={k.access?.restricted ? "warning" : "secondary"}>
@@ -211,7 +212,7 @@ export function ApiKeysPage() {
           <CardTitle>Gateway Endpoints</CardTitle>
           <CardDescription>Tap to copy base URL for OpenAI, Anthropic, or Google Gemini SDKs.</CardDescription>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-2 font-mono text-xs md:grid-cols-3">
+        <CardContent className="grid grid-cols-1 gap-2.5 text-xs md:grid-cols-3">
           {endpoints.map((ep) => (
             <button
               key={ep.id}
@@ -220,8 +221,8 @@ export function ApiKeysPage() {
               className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-3 text-left hover:bg-muted/60 transition-colors cursor-pointer"
             >
               <div className="min-w-0">
-                <div className="text-[10px] text-muted-foreground mb-0.5 font-sans">{ep.label}</div>
-                <div className="truncate">{ep.url}</div>
+                <div className="text-[10.5px] font-medium text-muted-foreground mb-1">{ep.label}</div>
+                <div className="font-mono text-[11.5px] truncate">{ep.url}</div>
               </div>
               {copiedId === ep.id ? <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
             </button>

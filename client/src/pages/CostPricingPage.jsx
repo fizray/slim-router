@@ -70,10 +70,10 @@ export function CostPricingPage({ onNavigate }) {
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <KpiCard title="Period Spend" value={fmtUsd(s.totalCostUsd)} sub={`${fmtNum(s.totalRequests)} requests`} icon={DollarSign} accent="text-emerald-500" />
-        <KpiCard title="Cost Without Cache" value={fmtUsd(s.costWithoutCacheUsd)} sub={`Net saved: ${fmtUsd(s.netCacheSavingsUsd)}`} icon={TrendingUp} />
-        <KpiCard title="Avg Cost / Request" value={fmtUsd(s.avgCostPerRequestUsd, 5)} sub="Effective blended cost" icon={DollarSign} />
-        <KpiCard title="Active Rate Models" value={fmtNum(pricingRows.length)} sub={lastSync ? `Synced ${new Date(lastSync).toLocaleDateString()}` : "Sync in Settings"} icon={RefreshCw} />
+        <KpiCard title="Period Spend" value={fmtUsd(s.totalCostUsd)} sub={`${fmtNum(s.totalRequests)} requests`} icon={DollarSign} accent="text-emerald-600 dark:text-emerald-400" />
+        <KpiCard title="No-Cache Cost" value={fmtUsd(s.costWithoutCacheUsd)} sub={`Net saved: ${fmtUsd(s.netCacheSavingsUsd)}`} icon={TrendingUp} />
+        <KpiCard title="Avg / Request" value={fmtUsd(s.avgCostPerRequestUsd, 5)} sub="Effective blended cost" icon={DollarSign} />
+        <KpiCard title="Active Rates" value={fmtNum(pricingRows.length)} sub={lastSync ? `Synced ${new Date(lastSync).toLocaleDateString()}` : "Sync in Settings"} icon={RefreshCw} />
       </div>
 
       <SvgMultiBarChart
@@ -93,32 +93,56 @@ export function CostPricingPage({ onNavigate }) {
       <Card>
         <CardHeader><CardTitle>Spend Breakdown by Model</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Provider / Model</TableHead>
-                <TableHead className="text-right">Input</TableHead>
-                <TableHead className="text-right">Cache Read</TableHead>
-                <TableHead className="text-right">Output</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {byModel.length === 0 ? (
-                <TableRow><TableCell colSpan={5} className="py-6 text-center text-muted-foreground">No spend recorded yet.</TableCell></TableRow>
-              ) : (
-                byModel.map((m) => (
-                  <TableRow key={`${m.provider}/${m.model}`}>
-                    <TableCell className="font-mono"><Badge variant="secondary" className="mr-2">{m.provider}</Badge>{m.model}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtUsd(m.costInputUsd)}</TableCell>
-                    <TableCell className="text-right font-mono text-sky-500">{fmtUsd(m.costCacheReadUsd)}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtUsd(m.costOutputUsd)}</TableCell>
-                    <TableCell className="text-right font-mono font-semibold">{fmtUsd(m.costTotalUsd)}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+          <div className="divide-y md:hidden">
+            {byModel.length === 0 ? (
+              <div className="py-6 text-center text-xs text-muted-foreground">No spend recorded yet.</div>
+            ) : (
+              byModel.map((m) => (
+                <div key={`${m.provider}/${m.model}`} className="px-4 py-3 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 font-mono text-xs font-medium truncate">
+                      <Badge variant="secondary" className="mr-1.5">{m.provider}</Badge>
+                      {m.model}
+                    </div>
+                    <span className="font-mono text-xs font-semibold shrink-0">{fmtUsd(m.costTotalUsd)}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 text-[11px] font-mono text-muted-foreground">
+                    <span>In {fmtUsd(m.costInputUsd)}</span>
+                    <span className="text-sky-600 dark:text-sky-400">Cache {fmtUsd(m.costCacheReadUsd)}</span>
+                    <span>Out {fmtUsd(m.costOutputUsd)}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Provider / Model</TableHead>
+                  <TableHead className="text-right">Input</TableHead>
+                  <TableHead className="text-right">Cache Read</TableHead>
+                  <TableHead className="text-right">Output</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {byModel.length === 0 ? (
+                  <TableRow><TableCell colSpan={5} className="py-6 text-center text-muted-foreground">No spend recorded yet.</TableCell></TableRow>
+                ) : (
+                  byModel.map((m) => (
+                    <TableRow key={`${m.provider}/${m.model}`}>
+                      <TableCell className="font-mono whitespace-nowrap"><Badge variant="secondary" className="mr-2">{m.provider}</Badge>{m.model}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtUsd(m.costInputUsd)}</TableCell>
+                      <TableCell className="text-right font-mono text-sky-600 dark:text-sky-400">{fmtUsd(m.costCacheReadUsd)}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtUsd(m.costOutputUsd)}</TableCell>
+                      <TableCell className="text-right font-mono font-semibold">{fmtUsd(m.costTotalUsd)}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 

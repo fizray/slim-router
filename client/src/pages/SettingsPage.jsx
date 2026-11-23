@@ -37,7 +37,11 @@ export function SettingsPage() {
     setDailyCap(s.globalDailyBudgetUsd ?? "");
     setMonthlyCap(s.globalMonthlyBudgetUsd ?? "");
     setBackups(b.backups || []);
-    setDisk(b.disk || null);
+    setDisk({
+      configBytes: b.config?.totalBytes ?? b.disk?.configBytes ?? 0,
+      telemetryBytes: b.telemetry?.totalBytes ?? b.disk?.telemetryBytes ?? 0,
+      payloadsBytes: b.payloads?.totalBytes ?? b.disk?.payloadsBytes ?? 0,
+    });
     setPricingData(p);
   }, []);
 
@@ -131,7 +135,8 @@ export function SettingsPage() {
     setMsg(""); setErr("");
     try {
       const res = await apiFetch("/api/backups", { method: "POST", body: { target } });
-      setMsg(`Atomic VACUUM INTO backup created: ${res.backup?.filename} (${fmtBytes(res.backup?.bytes)})`);
+      const b = res.backup || res;
+      setMsg(`Atomic VACUUM INTO backup created: ${b?.filename} (${fmtBytes(b?.bytes)})`);
       load();
     } catch (e2) {
       setErr(e2.message);
@@ -178,49 +183,93 @@ export function SettingsPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <form onSubmit={handleSaveOverride} className="grid grid-cols-1 gap-2.5 rounded-lg border bg-muted/30 p-3 sm:grid-cols-2 lg:grid-cols-7">
-            <NativeSelect value={rateForm.provider} onChange={(e) => setRateForm((f) => ({ ...f, provider: e.target.value }))}>
-              <option value="vertex">vertex</option>
-              <option value="gemini">gemini</option>
-              <option value="vertex-partner">vertex-partner</option>
-            </NativeSelect>
-            <Input placeholder="model id (e.g. gemini-2.5-pro)" value={rateForm.model} onChange={(e) => setRateForm((f) => ({ ...f, model: e.target.value }))} required />
-            <Input type="number" step="any" placeholder="Input $/1M" value={rateForm.input} onChange={(e) => setRateForm((f) => ({ ...f, input: e.target.value }))} required />
-            <Input type="number" step="any" placeholder="Output $/1M" value={rateForm.output} onChange={(e) => setRateForm((f) => ({ ...f, output: e.target.value }))} required />
-            <Input type="number" step="any" placeholder="Cache Read" value={rateForm.cached} onChange={(e) => setRateForm((f) => ({ ...f, cached: e.target.value }))} />
-            <Input type="number" step="any" placeholder="Cache Write" value={rateForm.cache_creation} onChange={(e) => setRateForm((f) => ({ ...f, cache_creation: e.target.value }))} />
-            <Button type="submit" className="w-full"><Plus className="h-3.5 w-3.5" /> Save Override</Button>
+          <form onSubmit={handleSaveOverride} className="grid grid-cols-2 gap-2.5 rounded-lg border bg-muted/25 p-3.5 lg:grid-cols-6">
+            <div className="space-y-1 col-span-2 lg:col-span-1">
+              <Label>Provider</Label>
+              <NativeSelect value={rateForm.provider} onChange={(e) => setRateForm((f) => ({ ...f, provider: e.target.value }))}>
+                <option value="vertex">vertex</option>
+                <option value="gemini">gemini</option>
+                <option value="vertex-partner">vertex-partner</option>
+              </NativeSelect>
+            </div>
+            <div className="space-y-1 col-span-2 lg:col-span-2">
+              <Label>Model ID</Label>
+              <Input placeholder="e.g. gemini-4-carbon" value={rateForm.model} onChange={(e) => setRateForm((f) => ({ ...f, model: e.target.value }))} required />
+            </div>
+            <div className="space-y-1">
+              <Label>Input ($/1M)</Label>
+              <Input type="number" step="any" placeholder="4.00" value={rateForm.input} onChange={(e) => setRateForm((f) => ({ ...f, input: e.target.value }))} required />
+            </div>
+            <div className="space-y-1">
+              <Label>Output ($/1M)</Label>
+              <Input type="number" step="any" placeholder="20.00" value={rateForm.output} onChange={(e) => setRateForm((f) => ({ ...f, output: e.target.value }))} required />
+            </div>
+            <div className="space-y-1">
+              <Label>Cache Read</Label>
+              <Input type="number" step="any" placeholder="0.20" value={rateForm.cached} onChange={(e) => setRateForm((f) => ({ ...f, cached: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Cache Write</Label>
+              <Input type="number" step="any" placeholder="Optional" value={rateForm.cache_creation} onChange={(e) => setRateForm((f) => ({ ...f, cache_creation: e.target.value }))} />
+            </div>
+            <div className="col-span-2 lg:col-span-5 flex items-end">
+              <Button type="submit" className="w-full sm:w-auto"><Plus className="h-3.5 w-3.5" /> Save Override</Button>
+            </div>
           </form>
 
           {overridesList.length === 0 ? (
             <p className="text-xs text-muted-foreground">No manual overrides configured. All models use live rates synced from models.dev.</p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Provider / Model</TableHead>
-                  <TableHead className="text-right">Input</TableHead>
-                  <TableHead className="text-right">Cached</TableHead>
-                  <TableHead className="text-right">Output</TableHead>
-                  <TableHead className="text-right">Action</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <>
+              <div className="space-y-2 md:hidden">
                 {overridesList.map((r) => (
-                  <TableRow key={`${r.provider}/${r.model}`}>
-                    <TableCell className="font-mono"><Badge variant="warning" className="mr-2">{r.provider}</Badge>{r.model}</TableCell>
-                    <TableCell className="text-right font-mono">${Number(r.input || 0).toFixed(4)}</TableCell>
-                    <TableCell className="text-right font-mono text-sky-500">${Number(r.cached ?? r.input ?? 0).toFixed(4)}</TableCell>
-                    <TableCell className="text-right font-mono">${Number(r.output || 0).toFixed(4)}</TableCell>
-                    <TableCell className="text-right">
+                  <div key={`${r.provider}/${r.model}`} className="rounded-lg border p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-mono text-xs font-medium truncate">
+                        <Badge variant="warning" className="mr-1.5">{r.provider}</Badge>
+                        {r.model}
+                      </div>
                       <Button variant="ghost" size="sm" onClick={() => handleResetOverride(r.provider, r.model)}>
                         <RotateCcw className="h-3 w-3" /> Reset
                       </Button>
-                    </TableCell>
-                  </TableRow>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-[11px] font-mono text-muted-foreground">
+                      <div>In: <span className="text-foreground">${Number(r.input || 0).toFixed(4)}</span></div>
+                      <div>Cache: <span className="text-sky-600 dark:text-sky-400">${Number(r.cached ?? r.input ?? 0).toFixed(4)}</span></div>
+                      <div>Out: <span className="text-foreground">${Number(r.output || 0).toFixed(4)}</span></div>
+                    </div>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Provider / Model</TableHead>
+                      <TableHead className="text-right">Input</TableHead>
+                      <TableHead className="text-right">Cached</TableHead>
+                      <TableHead className="text-right">Output</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {overridesList.map((r) => (
+                      <TableRow key={`${r.provider}/${r.model}`}>
+                        <TableCell className="font-mono whitespace-nowrap"><Badge variant="warning" className="mr-2">{r.provider}</Badge>{r.model}</TableCell>
+                        <TableCell className="text-right font-mono">${Number(r.input || 0).toFixed(4)}</TableCell>
+                        <TableCell className="text-right font-mono text-sky-600 dark:text-sky-400">${Number(r.cached ?? r.input ?? 0).toFixed(4)}</TableCell>
+                        <TableCell className="text-right font-mono">${Number(r.output || 0).toFixed(4)}</TableCell>
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="sm" onClick={() => handleResetOverride(r.provider, r.model)}>
+                            <RotateCcw className="h-3 w-3" /> Reset
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -281,28 +330,60 @@ export function SettingsPage() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Backup File</TableHead>
-                <TableHead className="text-right">Size</TableHead>
-                <TableHead className="text-right">Created</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {backups.length === 0 ? (
-                <TableRow><TableCell colSpan={3} className="py-6 text-center text-muted-foreground">No backups yet (daily automatic backup runs for config.sqlite).</TableCell></TableRow>
-              ) : (
-                backups.map((b) => (
-                  <TableRow key={b.filename}>
-                    <TableCell className="font-mono"><Badge variant="secondary" className="mr-2">SQLite</Badge>{b.filename}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtBytes(b.bytes)}</TableCell>
-                    <TableCell className="text-right font-mono text-muted-foreground">{new Date(b.createdAt).toLocaleString()}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+          <div className="divide-y md:hidden">
+            {backups.length === 0 ? (
+              <div className="py-6 text-center text-xs text-muted-foreground">No backups yet.</div>
+            ) : (
+              backups.map((b) => (
+                <div key={b.filename} className="px-4 py-3 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-mono text-xs font-medium truncate">{b.filename}</div>
+                    <div className="font-mono text-[11px] text-muted-foreground">{fmtBytes(b.bytes)} · {new Date(b.createdAt).toLocaleDateString()}</div>
+                  </div>
+                  <a
+                    href={`/api/backups?download=${encodeURIComponent(b.filename)}`}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-accent"
+                    title="Download SQLite backup"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Backup File</TableHead>
+                  <TableHead className="text-right">Size</TableHead>
+                  <TableHead className="text-right">Created</TableHead>
+                  <TableHead className="text-right">Download</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {backups.length === 0 ? (
+                  <TableRow><TableCell colSpan={4} className="py-6 text-center text-muted-foreground">No backups yet (daily automatic backup runs for config.sqlite).</TableCell></TableRow>
+                ) : (
+                  backups.map((b) => (
+                    <TableRow key={b.filename}>
+                      <TableCell className="font-mono whitespace-nowrap"><Badge variant="secondary" className="mr-2">SQLite</Badge>{b.filename}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtBytes(b.bytes)}</TableCell>
+                      <TableCell className="text-right font-mono text-muted-foreground">{new Date(b.createdAt).toLocaleString()}</TableCell>
+                      <TableCell className="text-right">
+                        <a
+                          href={`/api/backups?download=${encodeURIComponent(b.filename)}`}
+                          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium hover:bg-accent"
+                        >
+                          <Download className="h-3 w-3" /> SQLite
+                        </a>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>

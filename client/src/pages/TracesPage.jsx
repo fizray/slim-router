@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Search, X, FileImage } from "lucide-react";
+import { RefreshCw, Search, X, FileImage, Copy, Check } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { fmtMs, fmtNum, fmtUsd, fmtBytes, fmtPct } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -112,7 +112,7 @@ function TraceDetailContent({ selected, detailLoading }) {
       {selected.payload && (
         <div className="space-y-2">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sanitized Payload (Gzip BLOB)</div>
-          <pre className="max-h-72 overflow-auto rounded-md border bg-muted/50 p-2.5 text-[10px] font-mono">
+          <pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-2.5 text-[10.5px] font-mono whitespace-pre-wrap break-all">
             {JSON.stringify({
               clientRequest: selected.payload.clientRequest,
               clientResponse: selected.payload.clientResponse,
@@ -131,6 +131,7 @@ export function TracesPage() {
   const [filters, setFilters] = useState({ status: "", provider: "", cache: "", search: "" });
   const [selected, setSelected] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [copiedTrace, setCopiedTrace] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -184,18 +185,18 @@ export function TracesPage() {
           </div>
           <div className="grid grid-cols-3 gap-2 sm:flex">
             <NativeSelect className="sm:w-36" value={filters.provider} onChange={(e) => setFilters((f) => ({ ...f, provider: e.target.value }))}>
-              <option value="">All Providers</option>
+              <option value="">Provider</option>
               <option value="vertex">vertex</option>
               <option value="gemini">gemini</option>
               <option value="vertex-partner">vertex-partner</option>
             </NativeSelect>
             <NativeSelect className="sm:w-32" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
-              <option value="">All Status</option>
+              <option value="">Status</option>
               <option value="success">Success</option>
               <option value="error">Error</option>
             </NativeSelect>
             <NativeSelect className="sm:w-32" value={filters.cache} onChange={(e) => setFilters((f) => ({ ...f, cache: e.target.value }))}>
-              <option value="">All Cache</option>
+              <option value="">Cache</option>
               <option value="hit">Cache Hit</option>
               <option value="miss">Cache Miss</option>
             </NativeSelect>
@@ -228,7 +229,6 @@ export function TracesPage() {
         )}
       </div>
 
-      {/* Desktop split view (>= md) */}
       <div className="hidden md:grid grid-cols-1 gap-4 xl:grid-cols-12">
         <Card className={selected ? "xl:col-span-7" : "xl:col-span-12"}>
           <CardContent className="p-0">
@@ -238,16 +238,16 @@ export function TracesPage() {
                   <TableHead>Time</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Model</TableHead>
-                  <TableHead>Endpoint</TableHead>
-                  <TableHead className="text-right">Latency</TableHead>
-                  <TableHead className="text-right">Tokens</TableHead>
+                  {!selected && <TableHead>Endpoint</TableHead>}
+                  {!selected && <TableHead className="text-right">Latency</TableHead>}
+                  {!selected && <TableHead className="text-right">Tokens</TableHead>}
                   <TableHead className="text-right">Cache</TableHead>
                   <TableHead className="text-right">Cost</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {items.length === 0 ? (
-                  <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No traces match your filter.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={selected ? 5 : 8} className="py-10 text-center text-muted-foreground">No traces match your filter.</TableCell></TableRow>
                 ) : (
                   items.map((t) => (
                     <TableRow
@@ -264,14 +264,14 @@ export function TracesPage() {
                           {t.http_status || t.status}
                         </Badge>
                       </TableCell>
-                      <TableCell className="font-mono text-[11px]">
+                      <TableCell className="font-mono text-[11px] whitespace-nowrap">
                         <span className="text-muted-foreground">{t.final_provider}/</span>{t.final_model || t.requested_model}
                       </TableCell>
-                      <TableCell className="font-mono text-[11px] text-muted-foreground">{t.endpoint}</TableCell>
-                      <TableCell className="text-right font-mono">{fmtMs(t.total_ms)}</TableCell>
-                      <TableCell className="text-right font-mono">{fmtNum((t.prompt_tokens || 0) + (t.completion_tokens || 0))}</TableCell>
+                      {!selected && <TableCell className="font-mono text-[11px] text-muted-foreground whitespace-nowrap">{t.endpoint}</TableCell>}
+                      {!selected && <TableCell className="text-right font-mono whitespace-nowrap">{fmtMs(t.total_ms)}</TableCell>}
+                      {!selected && <TableCell className="text-right font-mono whitespace-nowrap">{fmtNum((t.prompt_tokens || 0) + (t.completion_tokens || 0))}</TableCell>}
                       <TableCell className="text-right"><CacheCell trace={t} /></TableCell>
-                      <TableCell className="text-right font-mono">{fmtUsd(t.cost_total)}</TableCell>
+                      <TableCell className="text-right font-mono whitespace-nowrap">{fmtUsd(t.cost_total)}</TableCell>
                     </TableRow>
                   ))
                 )}
@@ -284,9 +284,23 @@ export function TracesPage() {
           <Card className="hidden xl:block xl:col-span-5">
             <CardHeader className="flex flex-row items-start justify-between gap-2">
               <div className="min-w-0">
-                <CardTitle className="font-mono text-xs truncate">{selected.trace?.trace_id}</CardTitle>
+                <div className="flex items-center gap-1.5">
+                  <CardTitle className="font-mono text-xs truncate">{selected.trace?.trace_id}</CardTitle>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(selected.trace?.trace_id || "");
+                      setCopiedTrace(true);
+                      setTimeout(() => setCopiedTrace(false), 1400);
+                    }}
+                    className="text-muted-foreground hover:text-foreground cursor-pointer shrink-0"
+                    title="Copy trace ID"
+                  >
+                    {copiedTrace ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                  </button>
+                </div>
                 <CardDescription>
-                  {selected.trace?.final_provider}/{selected.trace?.final_model} · {fmtMs(selected.trace?.total_ms)} · {fmtUsd(selected.trace?.cost_total)}
+                  {selected.trace?.final_provider}/{selected.trace?.final_model} · {selected.trace?.endpoint} · {fmtMs(selected.trace?.total_ms)}
                 </CardDescription>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setSelected(null)}>

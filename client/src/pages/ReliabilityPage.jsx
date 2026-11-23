@@ -50,7 +50,17 @@ export function ReliabilityPage() {
         <KpiCard title="Rate Limited (429)" value={fmtNum(s.rateLimitedCount)} sub="Upstream or key RPM/TPM" icon={ShieldAlert} />
       </div>
 
-      <SvgBarChart title="Error Breakdown by Category" data={categories} xKey="label" valueKey="value" color="#ef4444" formatY={(v) => fmtNum(Math.round(v))} />
+      <SvgBarChart
+        title="Error Breakdown by Category"
+        description="Distribution of failed requests by error class"
+        data={categories}
+        xKey="label"
+        valueKey="value"
+        color="#ef4444"
+        height={185}
+        legendLabel="Error Count"
+        formatY={(v) => fmtNum(Math.round(v))}
+      />
 
       <Card>
         <CardHeader><CardTitle>Provider Reliability</CardTitle></CardHeader>

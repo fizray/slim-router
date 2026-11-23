@@ -74,39 +74,66 @@ export function PerformancePage() {
           <CardDescription>Streaming TPOT and TPS are strictly NULL for non-streaming calls to prevent skewed metrics.</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Model</TableHead>
-                <TableHead className="text-right">Calls</TableHead>
-                <TableHead className="text-right">TTFT P50</TableHead>
-                <TableHead className="text-right">Latency P50</TableHead>
-                <TableHead className="text-right">Latency P95</TableHead>
-                <TableHead className="text-right">Avg TPS</TableHead>
-                <TableHead className="text-right">Avg TPOT</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {models.length === 0 ? (
-                <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">No performance samples yet.</TableCell></TableRow>
-              ) : (
-                models.map((m) => (
-                  <TableRow key={`${m.provider}/${m.model}`}>
-                    <TableCell className="font-mono">
-                      <Badge variant="secondary" className="mr-2">{m.provider}</Badge>
+          <div className="divide-y md:hidden">
+            {models.length === 0 ? (
+              <div className="py-8 text-center text-xs text-muted-foreground">No performance samples yet.</div>
+            ) : (
+              models.map((m) => (
+                <div key={`${m.provider}/${m.model}`} className="px-4 py-3 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 font-mono text-xs font-medium truncate">
+                      <Badge variant="secondary" className="mr-1.5">{m.provider}</Badge>
                       {m.model}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">{fmtNum(m.requests)}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtMs(m.ttftP50Ms)}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtMs(m.latencyP50Ms)}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtMs(m.latencyP95Ms)}</TableCell>
-                    <TableCell className="text-right font-mono text-emerald-500">{m.avgOutputTps ? `${Number(m.avgOutputTps).toFixed(1)}` : "—"}</TableCell>
-                    <TableCell className="text-right font-mono">{fmtMs(m.avgTpotMs)}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                    </div>
+                    <span className="font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
+                      {m.avgOutputTps ? `${Number(m.avgOutputTps).toFixed(1)} t/s` : "—"}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 text-[11px] font-mono text-muted-foreground">
+                    <span>{fmtNum(m.requests)} calls</span>
+                    <span>TTFT {fmtMs(m.ttftP50Ms)}</span>
+                    <span>P50 {fmtMs(m.latencyP50Ms)}</span>
+                    <span>P95 {fmtMs(m.latencyP95Ms)}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Model</TableHead>
+                  <TableHead className="text-right">Calls</TableHead>
+                  <TableHead className="text-right">TTFT P50</TableHead>
+                  <TableHead className="text-right">Latency P50</TableHead>
+                  <TableHead className="text-right">Latency P95</TableHead>
+                  <TableHead className="text-right">Avg TPS</TableHead>
+                  <TableHead className="text-right">Avg TPOT</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {models.length === 0 ? (
+                  <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">No performance samples yet.</TableCell></TableRow>
+                ) : (
+                  models.map((m) => (
+                    <TableRow key={`${m.provider}/${m.model}`}>
+                      <TableCell className="font-mono whitespace-nowrap">
+                        <Badge variant="secondary" className="mr-2">{m.provider}</Badge>
+                        {m.model}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">{fmtNum(m.requests)}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtMs(m.ttftP50Ms)}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtMs(m.latencyP50Ms)}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtMs(m.latencyP95Ms)}</TableCell>
+                      <TableCell className="text-right font-mono text-emerald-600 dark:text-emerald-400">{m.avgOutputTps ? `${Number(m.avgOutputTps).toFixed(1)}` : "—"}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtMs(m.avgTpotMs)}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>

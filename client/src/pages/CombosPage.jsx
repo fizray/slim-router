@@ -8,16 +8,16 @@ import { Input, Label } from "@/components/ui/input";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 
 const PRESET_MODELS = [
+  "vertex/gemini-4-hydrogen",
+  "vertex/gemini-4-neon",
+  "vertex/gemini-4-carbon",
+  "vertex/gemini-3.5-flash-lite",
+  "vertex/gemini-3.5-transcribe",
   "vertex/gemini-2.5-pro",
   "vertex/gemini-2.5-flash",
-  "vertex/gemini-2.5-flash-lite",
-  "vertex/gemini-3.1-pro-preview",
-  "vertex/gemini-3-flash-preview",
   "gemini/gemini-2.5-pro",
   "gemini/gemini-2.5-flash",
-  "gemini/gemini-2.5-flash-lite",
-  "gemini/gemini-3.1-pro-preview",
-  "gemini/gemini-3-flash-preview",
+  "gemini/gemini-3.5-flash-lite",
   "vertex-partner/deepseek-ai/deepseek-v3.2-maas",
 ];
 
@@ -170,7 +170,7 @@ export function CombosPage() {
                   ) : (
                     combos.map((c) => (
                       <TableRow key={c.id}>
-                        <TableCell className="font-mono font-semibold">{c.name}</TableCell>
+                        <TableCell className="font-mono font-semibold whitespace-nowrap">{c.name}</TableCell>
                         <TableCell className="font-mono text-[11px] text-muted-foreground">{(c.models || []).join(" → ")}</TableCell>
                         <TableCell className="text-right">
                           <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleDeleteCombo(c.id)}>

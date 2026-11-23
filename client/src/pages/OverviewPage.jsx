@@ -43,16 +43,21 @@ export function OverviewPage() {
         </div>
       </div>
 
-      {/* Primary Operational KPIs */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <KpiCard title="Requests" value={fmtNum(s.totalRequests)} sub={`${fmtPct(s.successRatePct)} success`} icon={Activity} />
-        <KpiCard title="Total Cost" value={fmtUsd(s.totalCostUsd)} sub={`No cache: ${fmtUsd(s.costWithoutCacheUsd)}`} icon={DollarSign} accent="text-emerald-500" />
-        <KpiCard title="Cache Hit Ratio" value={fmtPct(s.cacheHitRatioPct)} sub={`Saved ${fmtUsd(s.netCacheSavingsUsd)}`} icon={DatabaseZap} accent="text-sky-500" />
+        <KpiCard title="Total Cost" value={fmtUsd(s.totalCostUsd)} sub={`No cache: ${fmtUsd(s.costWithoutCacheUsd)}`} icon={DollarSign} accent="text-emerald-600 dark:text-emerald-400" />
+        <KpiCard title="Cache Hit Ratio" value={fmtPct(s.cacheHitRatioPct)} sub={`Saved ${fmtUsd(s.netCacheSavingsUsd)}`} icon={DatabaseZap} accent="text-sky-600 dark:text-sky-400" />
         <KpiCard title="P95 Latency" value={fmtMs(s.p95LatencyMs)} sub={`TTFT p95: ${fmtMs(s.p95TtftMs)}`} icon={Gauge} />
-        <KpiCard title="Errors" value={fmtNum(s.errorCount)} sub={`Failovers: ${fmtNum(s.failoverCount)}`} icon={AlertTriangle} accent={s.errorCount > 0 ? "text-amber-500" : ""} />
+        <KpiCard
+          title="Errors"
+          value={fmtNum(s.errorCount)}
+          sub={`Failovers: ${fmtNum(s.failoverCount)}`}
+          icon={AlertTriangle}
+          accent={s.errorCount > 0 ? "text-amber-600 dark:text-amber-400" : ""}
+          className="col-span-2 lg:col-span-1"
+        />
       </div>
 
-      {/* Token Usage Flex Strip */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard
           title="Total Tokens"
@@ -65,21 +70,19 @@ export function OverviewPage() {
           value={fmtNum(s.uncachedInputTokens)}
           sub={`${Number(s.uncachedInputTokens || 0).toLocaleString()} tokens`}
           icon={ArrowDownToLine}
-          accent="text-blue-500"
         />
         <KpiCard
           title="Cached Tokens"
           value={fmtNum(s.cachedReadTokens)}
           sub={`${Number(s.cachedReadTokens || 0).toLocaleString()} tokens`}
           icon={Sparkles}
-          accent="text-sky-500"
+          accent="text-sky-600 dark:text-sky-400"
         />
         <KpiCard
           title="Output Tokens"
           value={fmtNum(s.completionTokens)}
           sub={`${Number(s.completionTokens || 0).toLocaleString()} tokens`}
           icon={ArrowUpFromLine}
-          accent="text-emerald-500"
         />
       </div>
 
@@ -139,41 +142,64 @@ export function OverviewPage() {
           <CardTitle>Top Models</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Provider / Model</TableHead>
-                <TableHead className="text-right">Requests</TableHead>
-                <TableHead className="text-right">Input</TableHead>
-                <TableHead className="text-right">Cached</TableHead>
-                <TableHead className="text-right">Output</TableHead>
-                <TableHead className="text-right">Total Tokens</TableHead>
-                <TableHead className="text-right">Cache Hit</TableHead>
-                <TableHead className="text-right">Cost</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {topModels.length === 0 ? (
-                <TableRow><TableCell colSpan={8} className="py-8 text-center text-muted-foreground">No requests recorded yet.</TableCell></TableRow>
-              ) : (
-                topModels.map((m) => (
-                  <TableRow key={`${m.provider}/${m.model}`}>
-                    <TableCell className="font-mono whitespace-nowrap">
-                      <Badge variant="secondary" className="mr-2">{m.provider}</Badge>
+          <div className="divide-y md:hidden">
+            {topModels.length === 0 ? (
+              <div className="py-8 text-center text-xs text-muted-foreground">No requests recorded yet.</div>
+            ) : (
+              topModels.map((m) => (
+                <div key={`${m.provider}/${m.model}`} className="px-4 py-3 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 font-mono text-xs font-medium truncate">
+                      <Badge variant="secondary" className="mr-1.5">{m.provider}</Badge>
                       {m.model}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">{fmtNum(m.requests)}</TableCell>
-                    <TableCell className="text-right font-mono text-blue-500">{fmtNum(m.uncachedInputTokens ?? m.promptTokens)}</TableCell>
-                    <TableCell className="text-right font-mono text-sky-500">{fmtNum(m.cachedReadTokens)}</TableCell>
-                    <TableCell className="text-right font-mono text-emerald-500">{fmtNum(m.completionTokens)}</TableCell>
-                    <TableCell className="text-right font-mono font-medium">{fmtNum(m.totalTokens)}</TableCell>
-                    <TableCell className="text-right font-mono text-sky-500">{fmtPct(m.cacheHitRatioPct)}</TableCell>
-                    <TableCell className="text-right font-mono font-medium">{fmtUsd(m.costUsd)}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                    </div>
+                    <span className="font-mono text-xs font-semibold shrink-0">{fmtUsd(m.costUsd)}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] font-mono text-muted-foreground">
+                    <span>{fmtNum(m.requests)} req</span>
+                    <span>In {fmtNum(m.uncachedInputTokens ?? m.promptTokens)} · Cache <span className="text-sky-600 dark:text-sky-400">{fmtNum(m.cachedReadTokens)}</span> · Out {fmtNum(m.completionTokens)}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Provider / Model</TableHead>
+                  <TableHead className="text-right">Requests</TableHead>
+                  <TableHead className="text-right">Input</TableHead>
+                  <TableHead className="text-right">Cached</TableHead>
+                  <TableHead className="text-right">Output</TableHead>
+                  <TableHead className="text-right">Total Tokens</TableHead>
+                  <TableHead className="text-right">Cache Hit</TableHead>
+                  <TableHead className="text-right">Cost</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {topModels.length === 0 ? (
+                  <TableRow><TableCell colSpan={8} className="py-8 text-center text-muted-foreground">No requests recorded yet.</TableCell></TableRow>
+                ) : (
+                  topModels.map((m) => (
+                    <TableRow key={`${m.provider}/${m.model}`}>
+                      <TableCell className="font-mono whitespace-nowrap">
+                        <Badge variant="secondary" className="mr-2">{m.provider}</Badge>
+                        {m.model}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">{fmtNum(m.requests)}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtNum(m.uncachedInputTokens ?? m.promptTokens)}</TableCell>
+                      <TableCell className="text-right font-mono text-sky-600 dark:text-sky-400">{fmtNum(m.cachedReadTokens)}</TableCell>
+                      <TableCell className="text-right font-mono">{fmtNum(m.completionTokens)}</TableCell>
+                      <TableCell className="text-right font-mono font-medium">{fmtNum(m.totalTokens)}</TableCell>
+                      <TableCell className="text-right font-mono text-sky-600 dark:text-sky-400">{fmtPct(m.cacheHitRatioPct)}</TableCell>
+                      <TableCell className="text-right font-mono font-medium">{fmtUsd(m.costUsd)}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>

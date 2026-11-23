@@ -27,8 +27,7 @@ export function ModelsPage() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
 
-  // Interactive API Key & Prompt Tester
-  const [testerOpen, setTesterOpen] = useState(true);
+  const [testerOpen, setTesterOpen] = useState(false);
   const [testerTab, setTesterTab] = useState("provider"); // "provider" | "gateway"
   const [testerRunning, setTesterRunning] = useState(false);
   const [testerResult, setTesterResult] = useState(null);
@@ -225,9 +224,14 @@ export function ModelsPage() {
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">Models &amp; Live Probe</h2>
-          <p className="text-xs text-muted-foreground">Browse all Vertex AI &amp; AI Studio models, probe live latency, and test provider or gateway API keys</p>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">Models &amp; Live Probe</h2>
+            <p className="text-xs text-muted-foreground">Browse all Vertex AI &amp; AI Studio models, probe live latency, and test provider or gateway API keys</p>
+          </div>
+          <Button variant="outline" size="icon" className="sm:hidden shrink-0" onClick={load} disabled={loading} aria-label="Refresh models">
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          </Button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={handleSyncCatalog} disabled={syncingCatalog}>
@@ -241,7 +245,7 @@ export function ModelsPage() {
             {batchRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
             Probe Active
           </Button>
-          <Button variant="outline" size="icon" onClick={load} disabled={loading}>
+          <Button variant="outline" size="icon" className="hidden sm:inline-flex" onClick={load} disabled={loading} aria-label="Refresh models">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
           </Button>
         </div>
@@ -252,24 +256,42 @@ export function ModelsPage() {
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard title="Catalog Models" value={models.length} sub={`${models.filter((m) => !m.disabled).length} enabled`} icon={Sparkles} />
-        <KpiCard title="Active Connections" value={connections.filter((c) => c.isActive).length} sub={`${connections.length} total configured`} icon={KeyRound} />
-        <KpiCard title="Probed Healthy" value={okProbes} sub="Verified live response" icon={CheckCircle2} accent="text-emerald-500" />
-        <KpiCard title="Probed Failed" value={failProbes} sub="Auth, quota, or model error" icon={XCircle} accent={failProbes > 0 ? "text-red-500" : ""} />
+        <KpiCard title="Connections" value={connections.filter((c) => c.isActive).length} sub={`${connections.length} configured`} icon={KeyRound} />
+        <KpiCard title="Probed Healthy" value={okProbes} sub="Verified live" icon={CheckCircle2} accent="text-emerald-500" />
+        <KpiCard title="Probed Failed" value={failProbes} sub="Failed probes" icon={XCircle} accent={failProbes > 0 ? "text-red-500" : ""} />
       </div>
 
-      {/* Collapsible Interactive API Key & Prompt Tester */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-          <div className="min-w-0">
-            <CardTitle className="flex items-center gap-2">
-              <KeyRound className="h-4 w-4 text-sky-500 shrink-0" />
-              API Key &amp; Live Prompt Tester
-            </CardTitle>
-            <CardDescription className="mt-0.5">Test saved connections, ad-hoc AI Studio/Vertex credentials, or client sk-9r_ gateway keys</CardDescription>
+        <CardHeader
+          role="button"
+          tabIndex={0}
+          aria-expanded={testerOpen}
+          onClick={() => setTesterOpen((o) => !o)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setTesterOpen((o) => !o);
+            }
+          }}
+          className="cursor-pointer select-none flex flex-row items-center justify-between gap-2 hover:bg-muted/30 transition-colors rounded-lg"
+        >
+          <div className="flex items-start gap-2.5 min-w-0">
+            <ChevronDown
+              className={`mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${testerOpen ? "rotate-180" : "-rotate-90"}`}
+            />
+            <div className="min-w-0">
+              <CardTitle className="flex items-center gap-2">
+                <KeyRound className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
+                API Key &amp; Live Prompt Tester
+              </CardTitle>
+              <CardDescription className="mt-0.5">
+                Test saved connections, ad-hoc credentials, or sk-9r_ gateway keys{!testerOpen && " · Click to expand"}
+              </CardDescription>
+            </div>
           </div>
-          <Button variant="ghost" size="icon" onClick={() => setTesterOpen((o) => !o)}>
-            {testerOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </Button>
+          <Badge variant="outline" className="shrink-0 hidden sm:inline-flex">
+            {testerOpen ? "Hide" : "Open Tester"}
+          </Badge>
         </CardHeader>
 
         {testerOpen && (
