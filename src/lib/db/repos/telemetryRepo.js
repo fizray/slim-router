@@ -587,14 +587,20 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
       model: r.model || "unknown",
       requests: 0,
       promptTokens: 0,
+      uncachedInputTokens: 0,
       completionTokens: 0,
+      reasoningTokens: 0,
       cachedReadTokens: 0,
+      cacheWriteTokens: 0,
       costUsd: 0,
     };
     m.requests += r.requests;
     m.promptTokens += r.prompt_tokens;
+    m.uncachedInputTokens += r.uncached_input_tokens;
     m.completionTokens += r.completion_tokens;
+    m.reasoningTokens += r.reasoning_tokens;
     m.cachedReadTokens += r.cached_read_tokens;
+    m.cacheWriteTokens += r.cache_write_tokens;
     m.costUsd += r.cost_total;
     byModel.set(modelKey, m);
   }
@@ -667,6 +673,12 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
     errorRatePct,
     failoverCount: fallbackCount,
     totalTokens,
+    promptTokens,
+    uncachedInputTokens: uncachedTokens,
+    cachedReadTokens,
+    cacheWriteTokens,
+    completionTokens,
+    reasoningTokens,
     totalCostUsd: kpis.costTotalUsd,
     costWithoutCacheUsd: kpis.costWithoutCacheUsd,
     cacheHitRatioPct: tokenCacheHitRatioPct,
@@ -689,9 +701,12 @@ export async function getOverviewAnalytics({ range = "7d" } = {}) {
       model: m.model,
       requests: m.requests,
       promptTokens: m.promptTokens,
+      uncachedInputTokens: m.uncachedInputTokens,
       completionTokens: m.completionTokens,
+      reasoningTokens: m.reasoningTokens,
       totalTokens: m.promptTokens + m.completionTokens,
       cachedReadTokens: m.cachedReadTokens,
+      cacheWriteTokens: m.cacheWriteTokens,
       cacheHitRatioPct: m.promptTokens > 0 ? Number(((m.cachedReadTokens / m.promptTokens) * 100).toFixed(2)) : 0,
       costUsd: Number(m.costUsd.toFixed(6)),
     }))
