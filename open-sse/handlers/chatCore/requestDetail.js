@@ -97,22 +97,33 @@ export function buildRequestDetail(base, overrides = {}) {
   };
 }
 
-// Build the "done" summary: duration, ttft, in/out tokens with cache breakdown
+// Build the "done" summary: duration, ttft, tps, in/cache hit+miss/out tokens
 export function formatDoneLine({ usage, latency }) {
   const u = usage || {};
   const inTok = u.prompt_tokens ?? u.input_tokens ?? 0;
   const outTok = u.completion_tokens ?? u.output_tokens ?? 0;
   const cacheRead = u.cache_read_input_tokens ?? u.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
   const cacheCreate = u.cache_creation_input_tokens ?? 0;
+  const missTok = Math.max(0, inTok - cacheRead);
+  const hitPct = inTok > 0 ? Math.round((cacheRead / inTok) * 100) : 0;
+
   let inStr = `IN ${inTok}`;
-  if (cacheRead || cacheCreate) {
-    const parts = [];
-    if (cacheRead) parts.push(`↻${cacheRead}`);
-    if (cacheCreate) parts.push(`+${cacheCreate}`);
-    inStr += ` (CACHE ${parts.join(" ")})`;
+  if (inTok > 0) {
+    const cacheParts = cacheRead > 0
+      ? [`HIT ${cacheRead} (${hitPct}%)`, `MISS ${missTok}`]
+      : [`MISS ${missTok}`];
+    if (cacheCreate) cacheParts.push(`WRITE +${cacheCreate}`);
+    inStr += ` (${cacheParts.join(" · ")})`;
   }
-  const ttftStr = latency?.ttft ? ` · TTFT ${latency.ttft}ms` : "";
-  return `DONE ${latency?.total ?? 0}ms${ttftStr} · ${inStr} · OUT ${outTok}`;
+
+  const totalMs = latency?.total ?? 0;
+  const ttftMs = latency?.ttft ?? 0;
+  const ttftStr = ttftMs ? ` · TTFT ${ttftMs}ms` : "";
+  const decodeMs = ttftMs > 0 && totalMs > ttftMs ? totalMs - ttftMs : 0;
+  const tpsStr = decodeMs >= 250 && outTok > 0
+    ? ` · ${((outTok / decodeMs) * 1000).toFixed(1)} tok/s`
+    : "";
+  return `DONE ${totalMs}ms${ttftStr}${tpsStr} · ${inStr} · OUT ${outTok}`;
 }
 
 export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, label = "USAGE", silent = false }) {

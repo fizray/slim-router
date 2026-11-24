@@ -312,6 +312,9 @@ export function createTraceContext({
       });
 
       // Emit structured JSON log line to stdout
+      const cacheHitPct = canonical.prompt_tokens > 0
+        ? Number(((canonical.cached_read_tokens / canonical.prompt_tokens) * 100).toFixed(1))
+        : 0;
       jsonLogger[status === "error" ? "warn" : "info"]("inference.completed", {
         trace_id: traceId,
         api_key_id: this.apiKeyId || undefined,
@@ -326,12 +329,20 @@ export function createTraceContext({
         fallback: fallbackTriggered,
         ttft_ms: traceRecord?.ttft_ms ?? ttftMs,
         total_ms: totalMs,
+        tpot_ms: traceRecord?.tpot_ms ?? null,
         tps: traceRecord?.output_tps ?? null,
         prompt_tokens: canonical.prompt_tokens,
         cached_read_tokens: canonical.cached_read_tokens,
+        uncached_input_tokens: canonical.uncached_input_tokens,
+        cache_hit_pct: cacheHitPct,
         cache_write_tokens: canonical.cache_write_tokens,
         completion_tokens: canonical.completion_tokens,
+        reasoning_tokens: canonical.reasoning_tokens,
         cost_usd: Number(cost.cost_total.toFixed(6)),
+        cost_input_usd: Number((cost.cost_input || 0).toFixed(6)),
+        cost_cache_read_usd: Number((cost.cost_cache_read || 0).toFixed(6)),
+        cost_output_usd: Number((cost.cost_output || 0).toFixed(6)),
+        cost_without_cache_usd: Number((cost.cost_without_cache || 0).toFixed(6)),
         cache_savings_usd: Number(cost.cache_net_savings.toFixed(6)),
         error_category: errCategory || undefined,
       });

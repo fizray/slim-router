@@ -20,7 +20,7 @@ function getCacheStats(t) {
   return { prompt, hit, miss, write, isHit, hitPct };
 }
 
-function CacheCell({ trace }) {
+function CacheCell({ trace, showMissDetail = false }) {
   const c = getCacheStats(trace);
   const tooltip = `Prompt: ${c.prompt.toLocaleString()} | Hit: ${c.hit.toLocaleString()} (${c.hitPct.toFixed(1)}%) | Miss: ${c.miss.toLocaleString()}${c.write > 0 ? ` | Write: ${c.write.toLocaleString()}` : ""}${trace?.cache_net_savings ? ` | Saved: ${fmtUsd(trace.cache_net_savings)}` : ""}`;
   return (
@@ -31,8 +31,16 @@ function CacheCell({ trace }) {
       <span className={`font-mono text-[11px] ${c.isHit ? "text-sky-600 dark:text-sky-400 font-medium" : "text-muted-foreground"}`}>
         {c.isHit ? `${fmtNum(c.hit)} (${Math.round(c.hitPct)}%)` : `${fmtNum(c.miss)} miss`}
       </span>
+      {showMissDetail && c.isHit && c.miss > 0 && (
+        <span className="font-mono text-[10.5px] text-muted-foreground">· {fmtNum(c.miss)} miss</span>
+      )}
     </div>
   );
+}
+
+function fmtTps(tps) {
+  if (tps == null || !Number.isFinite(Number(tps)) || Number(tps) <= 0) return "—";
+  return `${Number(tps).toFixed(1)} t/s`;
 }
 
 function TraceDetailContent({ selected, detailLoading }) {
@@ -41,30 +49,68 @@ function TraceDetailContent({ selected, detailLoading }) {
   }
   const t = selected.trace || {};
   const c = getCacheStats(t);
+  const decodeMs = t.ttft_ms != null && t.total_ms != null ? Math.max(0, Number(t.total_ms) - Number(t.ttft_ms)) : null;
+  const costTooltip = `Input: ${fmtUsd(t.cost_input || 0, 5)} | Cache Read: ${fmtUsd(t.cost_cache_read || 0, 5)}${t.cost_cache_write ? ` | Cache Write: ${fmtUsd(t.cost_cache_write, 5)}` : ""} | Output: ${fmtUsd(t.cost_output || 0, 5)}`;
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className="rounded-md border p-2">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Cache Status</div>
-          <div className="mt-1 flex items-center gap-1.5">
-            <Badge variant={c.isHit ? "info" : "secondary"}>{c.isHit ? "HIT" : "MISS"}</Badge>
-            <span className="font-mono text-xs font-semibold text-sky-500">{fmtPct(c.hitPct)}</span>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Latency</div>
+          <div className="mt-1 font-mono text-xs font-semibold">{fmtMs(t.total_ms)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            {t.is_stream ? "Stream" : "Non-stream"}{t.attempt_count > 1 ? ` · ${t.attempt_count}x` : ""}
           </div>
         </div>
         <div className="rounded-md border p-2">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Cached Read</div>
-          <div className="mt-1 font-mono text-xs font-semibold text-sky-500">{fmtNum(c.hit)}</div>
-          <div className="text-[10px] font-mono text-muted-foreground">Miss: {fmtNum(c.miss)}</div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">TTFT</div>
+          <div className="mt-1 font-mono text-xs font-semibold">{t.ttft_ms != null ? fmtMs(t.ttft_ms) : "—"}</div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            {decodeMs != null ? `Gen ${fmtMs(decodeMs)}` : "No stream TTFT"}
+          </div>
         </div>
         <div className="rounded-md border p-2">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Tokens (In/Out)</div>
-          <div className="mt-1 font-mono text-xs font-semibold">{fmtNum(c.prompt)} / {fmtNum(t.completion_tokens || 0)}</div>
-          {c.write > 0 && <div className="text-[10px] font-mono text-violet-500">Write: {fmtNum(c.write)}</div>}
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Speed (TPS)</div>
+          <div className="mt-1 font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400">{fmtTps(t.output_tps)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            {t.tpot_ms != null ? `TPOT ${fmtMs(t.tpot_ms)}` : "Short / non-stream"}
+          </div>
         </div>
         <div className="rounded-md border p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Output</div>
+          <div className="mt-1 font-mono text-xs font-semibold">{fmtNum(t.completion_tokens || 0)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            {t.reasoning_tokens > 0 ? `Reason ${fmtNum(t.reasoning_tokens)}` : `Prompt ${fmtNum(c.prompt)}`}
+          </div>
+        </div>
+
+        <div className="rounded-md border p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Cache Status</div>
+          <div className="mt-1 flex items-center gap-1.5">
+            <Badge variant={c.isHit ? "info" : "secondary"}>{c.isHit ? "HIT" : "MISS"}</Badge>
+            <span className="font-mono text-xs font-semibold text-sky-600 dark:text-sky-400">{fmtPct(c.hitPct)}</span>
+          </div>
+        </div>
+        <div className="rounded-md border p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Hit / Miss</div>
+          <div className="mt-1 font-mono text-xs font-semibold text-sky-600 dark:text-sky-400">{fmtNum(c.hit)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            Miss {fmtNum(c.miss)}{c.write > 0 ? ` · W ${fmtNum(c.write)}` : ""}
+          </div>
+        </div>
+        <div className="rounded-md border p-2" title={costTooltip}>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Price</div>
+          <div className="mt-1 font-mono text-xs font-semibold">{fmtUsd(t.cost_total || 0)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            Full {fmtUsd(t.cost_without_cache || 0)}
+          </div>
+        </div>
+        <div className="rounded-md border p-2" title={costTooltip}>
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Cache Saved</div>
-          <div className="mt-1 font-mono text-xs font-semibold text-emerald-500">{fmtUsd(t.cache_net_savings || 0)}</div>
-          <div className="text-[10px] font-mono text-muted-foreground">Total: {fmtUsd(t.cost_total || 0)}</div>
+          <div className="mt-1 font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400">{fmtUsd(t.cache_net_savings || 0)}</div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            Out {fmtUsd(t.cost_output || 0, 4)}
+          </div>
         </div>
       </div>
       <div>
@@ -219,9 +265,16 @@ export function TracesPage() {
                   </div>
                   <span className="font-mono text-[11px] text-muted-foreground shrink-0">{new Date(t.epoch_ms).toLocaleTimeString()}</span>
                 </div>
-                <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-muted-foreground">
-                  <CacheCell trace={t} />
-                  <span className="shrink-0">{fmtMs(t.total_ms)} · {fmtUsd(t.cost_total)}</span>
+                <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
+                  <CacheCell trace={t} showMissDetail />
+                  <span className="font-semibold shrink-0">{fmtUsd(t.cost_total)}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] font-mono text-muted-foreground">
+                  <span>{fmtMs(t.total_ms)}{t.ttft_ms != null ? ` (TTFT ${fmtMs(t.ttft_ms)})` : ""}</span>
+                  {t.output_tps != null && (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">{fmtTps(t.output_tps)}</span>
+                  )}
+                  <span>out {fmtNum(t.completion_tokens || 0)}</span>
                 </div>
               </CardContent>
             </Card>
@@ -238,11 +291,11 @@ export function TracesPage() {
                   <TableHead>Time</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Model</TableHead>
-                  {!selected && <TableHead>Endpoint</TableHead>}
-                  {!selected && <TableHead className="text-right">Latency</TableHead>}
-                  {!selected && <TableHead className="text-right">Tokens</TableHead>}
-                  <TableHead className="text-right">Cache</TableHead>
-                  <TableHead className="text-right">Cost</TableHead>
+                  {!selected && <TableHead className="text-right">Latency / TTFT</TableHead>}
+                  {!selected && <TableHead className="text-right">TPS</TableHead>}
+                  {!selected && <TableHead className="text-right">Out</TableHead>}
+                  <TableHead className="text-right">Cache (Hit / Miss)</TableHead>
+                  <TableHead className="text-right">Price</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -264,14 +317,42 @@ export function TracesPage() {
                           {t.http_status || t.status}
                         </Badge>
                       </TableCell>
-                      <TableCell className="font-mono text-[11px] whitespace-nowrap">
+                      <TableCell className="font-mono text-[11px] whitespace-nowrap" title={t.endpoint || ""}>
                         <span className="text-muted-foreground">{t.final_provider}/</span>{t.final_model || t.requested_model}
                       </TableCell>
-                      {!selected && <TableCell className="font-mono text-[11px] text-muted-foreground whitespace-nowrap">{t.endpoint}</TableCell>}
-                      {!selected && <TableCell className="text-right font-mono whitespace-nowrap">{fmtMs(t.total_ms)}</TableCell>}
-                      {!selected && <TableCell className="text-right font-mono whitespace-nowrap">{fmtNum((t.prompt_tokens || 0) + (t.completion_tokens || 0))}</TableCell>}
-                      <TableCell className="text-right"><CacheCell trace={t} /></TableCell>
-                      <TableCell className="text-right font-mono whitespace-nowrap">{fmtUsd(t.cost_total)}</TableCell>
+                      {!selected && (
+                        <TableCell
+                          className="text-right font-mono text-[11px] whitespace-nowrap"
+                          title={`Total: ${fmtMs(t.total_ms)}${t.ttft_ms != null ? ` · TTFT: ${fmtMs(t.ttft_ms)}` : ""}${t.tpot_ms != null ? ` · TPOT: ${fmtMs(t.tpot_ms)}` : ""}`}
+                        >
+                          <span>{fmtMs(t.total_ms)}</span>
+                          {t.ttft_ms != null && (
+                            <span className="text-muted-foreground"> / {fmtMs(t.ttft_ms)}</span>
+                          )}
+                        </TableCell>
+                      )}
+                      {!selected && (
+                        <TableCell className="text-right font-mono text-[11px] whitespace-nowrap">
+                          <span className={t.output_tps != null ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-muted-foreground"}>
+                            {fmtTps(t.output_tps)}
+                          </span>
+                        </TableCell>
+                      )}
+                      {!selected && (
+                        <TableCell
+                          className="text-right font-mono text-[11px] whitespace-nowrap"
+                          title={`Output: ${Number(t.completion_tokens || 0).toLocaleString()}${t.reasoning_tokens > 0 ? ` (Reasoning: ${Number(t.reasoning_tokens).toLocaleString()})` : ""} | Prompt: ${Number(t.prompt_tokens || 0).toLocaleString()}`}
+                        >
+                          {fmtNum(t.completion_tokens || 0)}
+                        </TableCell>
+                      )}
+                      <TableCell className="text-right"><CacheCell trace={t} showMissDetail={!selected} /></TableCell>
+                      <TableCell
+                        className="text-right font-mono whitespace-nowrap"
+                        title={`Total: ${fmtUsd(t.cost_total || 0, 5)} | No-cache: ${fmtUsd(t.cost_without_cache || 0, 5)} | Saved: ${fmtUsd(t.cache_net_savings || 0, 5)}`}
+                      >
+                        {fmtUsd(t.cost_total)}
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
